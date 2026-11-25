@@ -1,0 +1,6 @@
+---
+name: local_terms
+version: "1"
+sort: by_weight
+import_tables: [local_it, local_long]
+...

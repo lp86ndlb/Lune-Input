@@ -1,0 +1,37 @@
+# Fcitx5 / Rime session data and private learning history
+**/build/
+**/sync/
+*.userdb
+*.userdb.*
+*.userdb/
+*.userdb*/
+*.reverse.bin
+*.table.bin
+*.prism.bin
+*.stabledb
+installation.yaml
+user.yaml
+user.dict
+user.history
+cached_layouts
+.it-dict-*
+*.log
+
+# Local builds, tools and backups
+*.so
+*.so.*
+*.o
+*.deb
+*.tar.xz
+*.bak
+*.swp
+*~
+.~*
+backups/
+__pycache__/
+.venv/
+.env
+.env.*
+.vscode/
+.idea/
+.DS_Store

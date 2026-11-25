@@ -1,0 +1,69 @@
+#!/usr/bin/python3
+"""更新朙月拼音使用的清华 THUOCL IT 词表。"""
+import argparse
+import fcntl
+import hashlib
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+import unicodedata
+import urllib.request
+
+SOURCE = "https://raw.githubusercontent.com/thunlp/THUOCL/master/data/THUOCL_IT.txt"
+DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "fcitx5/rime"
+
+def run():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data-dir", default=DATA, type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--prepare-only", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    with (args.data_dir / ".it-dict-update.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with urllib.request.urlopen(SOURCE, timeout=40) as upstream:
+            data = upstream.read(4_000_001)
+        if len(data) > 4_000_000:
+            raise ValueError("上游词表超过预期大小")
+        terms = {}
+        for line in data.decode("utf-8-sig").splitlines():
+            columns = line.split("\t")
+            if len(columns) != 2:
+                continue
+            word, count = (item.strip() for item in columns)
+            if re.fullmatch(r"[a-zA-Z\u3400-\u9fff]+", word) and count.isdecimal():
+                terms[word] = max(terms.get(word, 0), int(count))
+        if len(terms) < 5000:
+            raise ValueError("上游有效词条不足，保留当前词表")
+        romanized = subprocess.run(
+            ["uconv", "-x", "Han-Latin; Lower"],
+            input="\n".join(terms) + "\n", text=True, capture_output=True, check=True
+        ).stdout.splitlines()
+        entries = []
+        for (word, weight), spelling in zip(terms.items(), romanized, strict=True):
+            decomposed = unicodedata.normalize("NFD", spelling)
+            plain = re.sub("[\u0300-\u0304\u030c]", "", decomposed).replace("u\u0308", "v")
+            code = re.sub(r"[ ’']", "", plain)
+            if re.fullmatch("[a-z]+", code):
+                entries.append(f"{word}\t{code}\t{max(weight, 1)}\n")
+        version = hashlib.sha256(data).hexdigest()[:16]
+        result = ("# https://github.com/thunlp/THUOCL — IT\n---\nname: local_it\n"
+                  f'version: "{version}"\nsort: by_weight\n...\n' + "".join(entries))
+        target = args.data_dir / "local_it.dict.yaml"
+        changed = not target.exists() or result != target.read_text()
+        marker = args.data_dir / ".it-dict-needs-deploy"
+        if changed:
+            with tempfile.NamedTemporaryFile(mode="w", dir=args.data_dir, delete=False) as tmp:
+                tmp.write(result)
+            marker.touch()
+            os.replace(tmp.name, target)
+        if not args.prepare_only and marker.exists():
+            subprocess.run(["busctl", "--user", "call", "org.fcitx.Fcitx5", "/controller",
+                            "org.fcitx.Fcitx.Controller1", "SetConfig", "sv",
+                            "fcitx://config/addon/rime/deploy", "a{sv}", "0"], check=True)
+            marker.unlink(missing_ok=True)
+            print("已请求 Fcitx 重新部署词库。")
+        print(f"IT 词库共 {len(entries)} 条，版本 {version}，" + ("已更新。" if changed else "已是当前上游版本。"))
+
+if __name__ == "__main__":
+    run()

@@ -1,0 +1,6 @@
+schema:
+  schema_id: local_terms
+  name: 术语与长词
+  version: "1"
+translator:
+  dictionary: local_terms

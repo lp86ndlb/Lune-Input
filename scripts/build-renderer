@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""Build the X11 Classic UI variant for Ubuntu 24.04's matching Fcitx5 package."""
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+from tempfile import TemporaryDirectory
+from urllib.request import urlopen
+
+ROOT = Path(__file__).resolve().parents[1]
+VENDOR = Path("/usr/lib/x86_64-linux-gnu/fcitx5/libclassicui.so")
+VENDOR_SHA = "c5a1e5497ae14e6bd99a5ce31a1bd11ee76af694bc295f8398d2a85929f29037"
+ARCHIVE_SHA = "8a67003d0370dbeaef1c6a171044c6c8da0c24006bfd1c15b7c44ba488f0d3f2"
+ARCHIVE_URL = "https://archive.ubuntu.com/ubuntu/pool/universe/f/fcitx5/fcitx5_5.1.7.orig.tar.xz"
+UNITS = ("classicui window theme inputwindow plasmathemewatchdog colorhelper xcbui "
+         "xcbwindow xcbtraywindow xcbinputwindow xcbmenu portalsettingmonitor").split()
+
+
+def run(*args):
+    subprocess.run(args, check=True)
+
+
+def build():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--archive", type=Path, help="use an existing Ubuntu upstream tarball")
+    args = parser.parse_args()
+    if not VENDOR.is_file() or sha256(VENDOR.read_bytes()).hexdigest() != VENDOR_SHA:
+        parser.exit(1, "当前系统的 Classic UI 与补丁目标版本不同，可直接使用主题和词库。\n")
+
+    output = ROOT / "build"
+    output.mkdir(exist_ok=True)
+    with TemporaryDirectory(dir=output) as temp:
+        work = Path(temp)
+        archive = args.archive
+        if archive is None:
+            archive = work / "fcitx5.tar.xz"
+            with urlopen(ARCHIVE_URL, timeout=90) as response:
+                archive.write_bytes(response.read())
+        if sha256(archive.read_bytes()).hexdigest() != ARCHIVE_SHA:
+            parser.exit(1, "Fcitx5 源码包 SHA-256 校验失败。\n")
+        run("tar", "-xf", archive, "-C", work)
+        source = work / "fcitx5-5.1.7"
+        classic = source / "src/ui/classic"
+        run("patch", "--batch", "--fuzz=0", "-p1", "-d", source, "-i",
+            ROOT / "renderer/fcitx5-5.1.7-width.patch")
+        (work / "config.h").write_text("#pragma once\n#define ENABLE_X11 1\n#define ENABLE_DBUS 1\n")
+        headers = Path(os.environ.get("LUNE_INCLUDE_ROOT", "/usr/include"))
+        includes = [work, headers, headers / "xcb",
+                    Path("/usr/include/xcb"), *sorted((headers / "Fcitx5").glob("*")),
+                    *sorted((headers / "Fcitx5/Module/fcitx-module").glob("*")),
+                    *(headers / p for p in ("cairo", "harfbuzz", "pango-1.0", "gdk-pixbuf-2.0")),
+                    source / "src/lib", source / "src/modules/xcb"]
+        gio_flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "gio-unix-2.0"], text=True))
+        flags = ["-std=c++17", "-O2", "-fPIC", "-fvisibility=hidden", "-pthread", *gio_flags,
+                 *[f"-I{p}" for p in includes if p.is_dir()]]
+
+        def compile_unit(name):
+            run("g++", *flags, "-c", classic / f"{name}.cpp", "-o", work / f"{name}.o")
+
+        with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 1, 4)) as pool:
+            list(pool.map(compile_unit, UNITS))
+        dynamic = subprocess.check_output(["readelf", "-d", VENDOR], text=True, env={**os.environ, "LC_ALL": "C"})
+        libraries = re.findall(r"NEEDED.*?\[(.*?)\]", dynamic)
+        motion = work / "libclassicui-motion.so"
+        run("g++", "-shared", "-Wl,-z,defs", "-o", motion, *[work / f"{n}.o" for n in UNITS],
+            *[f"-l:{lib}" for lib in libraries], "-l:libxcb-util.so.1", "-l:libxcb-shape.so.0",
+            "-l:libglib-2.0.so.0", "-lfmt")
+        selector = work / "libclassicui-select.so"
+        glib = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "glib-2.0"], text=True))
+        run("cc", "-shared", "-fPIC", f'-DVENDOR_DIGEST="{VENDOR_SHA}"',
+            ROOT / "renderer/select.c", "-o", selector, *glib, "-ldl")
+        for library in (motion, selector):
+            library.replace(output / library.name)
+    print(f"构建完成：{output}")
+
+
+if __name__ == "__main__":
+    build()

@@ -1,0 +1,43 @@
+patch:
+  speller/algebra:
+    __patch:
+      - pinyin:/en_eng_bufen  # en/eng、in/ing
+      - pinyin:/abbreviation
+      - pinyin:/spelling_correction
+      - pinyin:/key_correction
+  menu/page_size: 9
+  switches/+:
+    - {name: _linear, reset: 1}
+  punctuator/import_preset: local_symbols
+  schema/dependencies/+:
+  - melt_eng
+  - local_terms
+  engine/translators/+:
+  - table_translator@melt_eng
+  - table_translator@cn_en
+  - table_translator@local_terms
+  melt_eng:
+    dictionary: melt_eng
+    enable_completion: true
+    enable_user_dict: false
+    enable_sentence: false
+    initial_quality: -0.20
+    comment_format:
+    - xform/.+//
+  cn_en:
+    dictionary: ''
+    user_dict: en_dicts/cn_en
+    db_class: stabledb
+    enable_completion: false
+    enable_sentence: false
+    initial_quality: 1.1
+    comment_format:
+    - xform/.+//
+  local_terms:
+    dictionary: local_terms
+    enable_completion: false
+    enable_sentence: false
+    enable_user_dict: false
+    initial_quality: 1.05
+    comment_format:
+    - xform/.+//

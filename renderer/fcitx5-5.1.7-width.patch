@@ -1,0 +1,970 @@
+--- a/src/ui/classic/CMakeLists.txt
++++ b/src/ui/classic/CMakeLists.txt
+@@ -20,10 +20,11 @@
+ endif()
+ 
+ if (ENABLE_X11)
++    pkg_check_modules(XcbShape REQUIRED IMPORTED_TARGET xcb-shape)
+     set(CLASSICUI_SRCS ${CLASSICUI_SRCS}
+         xcbui.cpp xcbwindow.cpp xcbtraywindow.cpp xcbinputwindow.cpp xcbmenu.cpp)
+     set(CLASSICUI_LIBS ${CLASSICUI_LIBS} PkgConfig::CairoXCB Fcitx5::Module::XCB
+-        XCB::AUX XCB::ICCCM XCB::XINERAMA XCB::RANDR XCB::EWMH)
++        XCB::AUX XCB::ICCCM XCB::XINERAMA XCB::RANDR XCB::EWMH PkgConfig::XcbShape)
+ endif()
+ 
+ if (ENABLE_DBUS)
+--- a/src/ui/classic/classicui.h
++++ b/src/ui/classic/classicui.h
+@@ -163,6 +163,9 @@
+         this, "UseAccentColor",
+         _("Follow system accent color if it is supported by theme and desktop"),
+         true};
++    Option<int, IntConstrain> candidateResizeDuration{
++        this, "CandidateResizeDuration", _("候选框宽度过渡（毫秒）"), 168,
++        IntConstrain(0, 250)};
+     OptionWithAnnotation<bool, ToolTipAnnotation> perScreenDPI{
+         this,
+         "PerScreenDPI",
+--- a/src/ui/classic/inputwindow.cpp
++++ b/src/ui/classic/inputwindow.cpp
+@@ -290,6 +290,16 @@
+     // | candidate 3
+     auto *instance = parent_->instance();
+     auto &inputPanel = inputContext->inputPanel();
++    if (!visible_ || inputContext_.get() != inputContext ||
++        layoutFont_ != *parent_->config().font) {
++        horizontalSlots_.clear();
++        layoutFont_ = *parent_->config().font;
++    }
++    hasContinuingCandidates_ = false;
++    sharedCandidateAdvance_ = std::numeric_limits<int>::max();
++    std::vector<HorizontalSlot> slots;
++    int page = -1;
++    const bool previouslyHadPrev = hasPrev_;
+     inputContext_ = inputContext->watch();
+ 
+     cursor_ = -1;
+@@ -319,6 +329,7 @@
+             count++;
+         }
+         resizeCandidates(count);
++        slots.reserve(count);
+ 
+         candidateIndex_ = -1;
+         int localIndex = 0;
+@@ -344,11 +355,13 @@
+                 instance->outputFilter(inputContext, candidate.text());
+             setTextToMultilineLayout(
+                 inputContext, candidateLayouts_[localIndex], candidateText);
++            slots.push_back({candidateText.toString(), 0});
+             localIndex++;
+         }
+ 
+         layoutHint_ = candidateList->layoutHint();
+         if (auto *pageable = candidateList->toPageable()) {
++            page = pageable->currentPage();
+             hasPrev_ = pageable->hasPrev();
+             hasNext_ = pageable->hasNext();
+         } else {
+@@ -362,12 +375,20 @@
+         hasNext_ = false;
+     }
+ 
++    candidateTextsChanged_ = !std::equal(
++        slots.begin(), slots.end(), horizontalSlots_.begin(), horizontalSlots_.end(),
++        [](const HorizontalSlot &a, const HorizontalSlot &b) { return a.text == b.text; });
++    if (page != candidatePage_ || previouslyHadPrev != hasPrev_ ||
++        !nCandidates_) {
++        horizontalSlots_.clear();
++    }
++    candidatePage_ = page;
+     visible_ = nCandidates_ ||
+                pango_layout_get_character_count(upperLayout_.get()) ||
+                pango_layout_get_character_count(lowerLayout_.get());
+     int width = 0, height = 0;
+     if (visible_) {
+-        std::tie(width, height) = sizeHint();
++        std::tie(width, height) = sizeHint(slots);
+         if (width <= 0 || height <= 0) {
+             width = height = 0;
+             visible_ = false;
+@@ -376,7 +397,8 @@
+     return {width, height};
+ }
+ 
+-std::pair<unsigned int, unsigned int> InputWindow::sizeHint() {
++std::pair<unsigned int, unsigned int>
++InputWindow::sizeHint(std::vector<HorizontalSlot> &slots) {
+     auto &theme = parent_->theme();
+     auto *fontDesc =
+         pango_font_description_from_string(parent_->config().font->c_str());
+@@ -447,30 +469,47 @@
+             wholeH += candidateH;
+             updateIfLarger(wholeW, candidateW);
+         } else {
++            slots[i].left = wholeW;
+             wholeW += candidateW;
+             updateIfLarger(wholeH, candidateH);
+         }
+     }
+-    updateIfLarger(width, wholeW);
+     candidatesHeight_ = wholeH;
+     height += wholeH;
+     const auto &margin = *theme.inputPanel->contentMargin;
+-    width += *margin.marginLeft + *margin.marginRight;
++    int frameWidth = *margin.marginLeft + *margin.marginRight;
+     height += *margin.marginTop + *margin.marginBottom;
+ 
+     if (nCandidates_ && (hasPrev_ || hasNext_)) {
+         const auto &prev = theme.loadAction(*theme.inputPanel->prev);
+         const auto &next = theme.loadAction(*theme.inputPanel->next);
+         if (prev.valid() && next.valid()) {
+-            width += prev.width() + next.width();
++            frameWidth += prev.width() + next.width();
+         }
+     }
+ 
++    if (vertical) {
++        horizontalSlots_.clear();
++    } else {
++        // Measure every row from its current labels and words. Old positions
++        // inform screen-edge placement only; they never become padding.
++        for (size_t i = 0; i < std::min(slots.size(), horizontalSlots_.size()); ++i) {
++            if (!slots[i].text.empty() && slots[i].text == horizontalSlots_[i].text) {
++                hasContinuingCandidates_ = true;
++                sharedCandidateAdvance_ = std::min(sharedCandidateAdvance_,
++                    slots[i].left - horizontalSlots_[i].left);
++            }
++        }
++        horizontalSlots_ = std::move(slots);
++    }
++    horizontalRowWidth_ = vertical ? 0 : int(wholeW) + frameWidth;
++    updateIfLarger(width, wholeW);
++    width += frameWidth;
+     return {width, height};
+ }
+ 
+ void InputWindow::paint(cairo_t *cr, unsigned int width, unsigned int height,
+-                        double scale) {
++                        double scale, bool clipContent, unsigned int layoutWidth) {
+     cairo_scale(cr, scale, scale);
+     auto &theme = parent_->theme();
+     cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+@@ -481,6 +520,18 @@
+     cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+     cairo_save(cr);
+ 
++    // During expansion, keep incoming text inside the theme's rounded edge.
++    if (clipContent) {
++        cairo_rectangle(cr, *margin.marginLeft, 0,
++                        std::max(0, int(width) - *margin.marginLeft - *margin.marginRight),
++                        height);
++        cairo_clip(cr);
++    }
++    // Keep text, highlights and paging buttons at their destination while
++    // the background and the visible right edge change width.
++    if (layoutWidth) {
++        width = layoutWidth;
++    }
+     // Move position to the right place.
+     cairo_translate(cr, *margin.marginLeft, *margin.marginTop);
+     cairoSetSourceColor(cr, theme.inputPanelText());
+@@ -495,7 +546,6 @@
+ 
+     size_t currentHeight = 0;
+     int w, h;
+-    auto extraW = *textMargin.marginLeft + *textMargin.marginRight;
+     auto extraH = *textMargin.marginTop + *textMargin.marginBottom;
+     if (pango_layout_get_character_count(upperLayout_.get())) {
+         renderLayout(cr, upperLayout_.get(), *textMargin.marginLeft,
+@@ -525,16 +575,11 @@
+         currentHeight += fontHeight + extraH;
+     }
+ 
+-    bool vertical = parent_->config().verticalCandidateList.value();
+-    if (layoutHint_ == CandidateLayoutHint::Vertical) {
+-        vertical = true;
+-    } else if (layoutHint_ == CandidateLayoutHint::Horizontal) {
+-        vertical = false;
+-    }
+-
++    // Hit testing and painting must follow the layout that was measured.
++    const bool vertical = horizontalSlots_.empty();
+     candidateRegions_.clear();
+     candidateRegions_.reserve(nCandidates_);
+-    size_t wholeW = 0, wholeH = 0;
++    size_t wholeH = 0;
+ 
+     // size of text = textMargin + actual text size.
+     // HighLight = HighLight margin + TEXT.
+@@ -546,7 +591,7 @@
+             x = 0;
+             y = currentHeight + wholeH;
+         } else {
+-            x = wholeW;
++            x = horizontalSlots_[i].left;
+             y = currentHeight;
+         }
+         x += *textMargin.marginLeft;
+@@ -566,7 +611,6 @@
+             wholeH += vheight + extraH;
+         } else {
+             vheight = candidatesHeight_ - extraH;
+-            wholeW += candidateW + labelW + extraW;
+         }
+         const auto &highlightMargin = *theme.inputPanel->highlight->margin;
+         const auto &clickMargin = *theme.inputPanel->highlight->clickMargin;
+--- a/src/ui/classic/inputwindow.h
++++ b/src/ui/classic/inputwindow.h
+@@ -54,7 +54,7 @@
+     InputWindow(ClassicUI *parent);
+     std::pair<int, int> update(InputContext *inputContext);
+     void paint(cairo_t *cr, unsigned int width, unsigned int height,
+-               double scale);
++               double scale, bool clipContent = false, unsigned int layoutWidth = 0);
+     void hide();
+     bool visible() const { return visible_; }
+     bool hover(int x, int y);
+@@ -100,11 +100,23 @@
+     bool nextHovered_ = false;
+     int candidateIndex_ = -1;
+     CandidateLayoutHint layoutHint_ = CandidateLayoutHint::NotSet;
++    struct HorizontalSlot {
++        std::string text;
++        int left = 0;
++    };
++    std::vector<HorizontalSlot> horizontalSlots_;
++    int candidatePage_ = -1;
++    bool hasContinuingCandidates_ = false;
++    int sharedCandidateAdvance_ = 0;
++    int horizontalRowWidth_ = 0;
++    bool candidateTextsChanged_ = false;
++    std::string layoutFont_;
+     size_t candidatesHeight_ = 0;
+     int hoverIndex_ = -1;
+ 
+ private:
+-    std::pair<unsigned int, unsigned int> sizeHint();
++    std::pair<unsigned int, unsigned int>
++    sizeHint(std::vector<HorizontalSlot> &slots);
+ };
+ 
+ } // namespace classicui
+--- a/src/ui/classic/xcbinputwindow.cpp
++++ b/src/ui/classic/xcbinputwindow.cpp
+@@ -6,7 +6,11 @@
+  */
+ 
+ #include "xcbinputwindow.h"
++#include <algorithm>
++#include <cmath>
+ #include <pango/pangocairo.h>
++#include <xcb/shape.h>
++#include <cairo/cairo-xcb.h>
+ #include <xcb/xcb_aux.h>
+ #include <xcb/xcb_icccm.h>
+ #include "fcitx-utils/rect.h"
+@@ -19,6 +23,11 @@
+           ui_->displayName(), "_KDE_NET_WM_BLUR_BEHIND_REGION", false)) {}
+ 
+ void XCBInputWindow::postCreateWindow() {
++    positioned_ = shaped_ = false;
++    backingWidth_ = 0;
++    backingHeight_ = 0;
++    const auto *shape = xcb_get_extension_data(ui_->connection(), &xcb_shape_id);
++    useShape_ = shape && shape->present;
+     if (ui_->ewmh()->_NET_WM_WINDOW_TYPE_POPUP_MENU &&
+         ui_->ewmh()->_NET_WM_WINDOW_TYPE) {
+         xcb_ewmh_set_wm_window_type(
+@@ -41,109 +50,481 @@
+             XCB_EVENT_MASK_LEAVE_WINDOW);
+ }
+ 
+-void XCBInputWindow::updatePosition(InputContext *inputContext) {
+-    if (!visible()) {
+-        return;
+-    }
+-    int x, y, h;
+-
+-    // add support of input panel offset here.
+-    // TODO: RTL support.
+-    auto &theme = parent_->theme();
+-    int leftSW, rightSW, topSW, bottomSW, actualWidth, actualHeight;
+-    leftSW = theme.inputPanel->shadowMargin->marginLeft.value();
+-    rightSW = theme.inputPanel->shadowMargin->marginRight.value();
+-    topSW = theme.inputPanel->shadowMargin->marginTop.value();
+-    bottomSW = theme.inputPanel->shadowMargin->marginBottom.value();
+-
+-    x = inputContext->cursorRect().left();
+-    y = inputContext->cursorRect().top();
+-    h = inputContext->cursorRect().height();
+-
+-    actualWidth = width() - leftSW - rightSW;
+-    actualWidth = actualWidth <= 0 ? width() : actualWidth;
+-    actualHeight = height() - topSW - bottomSW;
+-    actualHeight = actualHeight <= 0 ? height() : actualHeight;
+-
++const Rect *XCBInputWindow::screenForCaret() const {
++    const auto &cursor = acceptedCaret_;
+     const Rect *closestScreen = nullptr;
+     int shortestDistance = INT_MAX;
+     for (const auto &rect : ui_->screenRects()) {
+-        int thisDistance = rect.first.distance(x, y);
++        int thisDistance = rect.first.distance(cursor.left(), cursor.top());
+         if (thisDistance < shortestDistance) {
+             shortestDistance = thisDistance;
+             closestScreen = &rect.first;
+         }
+     }
++    return closestScreen;
++}
+ 
+-    if (closestScreen) {
+-        int newX, newY;
++bool XCBInputWindow::sameCaretLine(const Rect &cursor, const Rect &origin) const {
++    const int jitter = std::max(2, std::min(cursor.height(), origin.height()) / 2);
++    const int travel = std::lround(144.0 * (dpi_ > 0 ? dpi_ : 96) / 96.0);
++    return std::abs(cursor.top() - origin.top()) <= jitter &&
++           std::abs(cursor.left() - origin.left()) <= travel;
++}
+ 
+-        if (x < closestScreen->left()) {
+-            newX = closestScreen->left();
+-        } else {
+-            newX = x;
+-        }
++void XCBInputWindow::observeCaret(InputContext *ic, bool fresh) {
++    const Rect rect = ic->cursorRect();
++    // An unset rectangle may follow even a valid caret near the origin.
++    if (!fresh && rect == Rect() && acceptedCaret_ != Rect()) {
++        caretTimer_.reset();
++        return;
++    }
++    if (fresh || rect == acceptedCaret_ || sameCaretLine(rect, acceptedCaret_)) {
++        caretTimer_.reset();
++        acceptedCaret_ = rect;
++        return;
++    }
++    // Confirm a real relocation before moving the popup.
++    if (caretTimer_ && caretTimer_->isEnabled() && sameCaretLine(rect, proposedCaret_)) {
++        proposedCaret_ = rect;
++        return;
++    }
++    proposedCaret_ = rect;
++    caretTimer_ = parent_->instance()->eventLoop().addTimeEvent(
++        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 42000, 1000,
++        [this](EventSourceTime *, uint64_t) {
++            if (auto *owner = inputContext_.get(); owner && owner->hasFocus() && visible()) {
++                if (owner->cursorRect() == proposedCaret_) {
++                    acceptedCaret_ = proposedCaret_;
++                    update(owner);
++                }
++            }
++            return true;
++        });
++}
++
++void XCBInputWindow::updatePosition(InputContext *ic) {
++    if (visible() && ic && ic == inputContext_.get()) {
++        observeCaret(ic, false);
++        configureGeometry(width(), height(), false, false);
++    }
++}
+ 
+-        if (y < closestScreen->top()) {
+-            newY = closestScreen->top();
++void XCBInputWindow::configureGeometry(int frameWidth,
++                                       int frameHeight, bool raise, bool recover) {
++    const auto &shadow = *parent_->theme().inputPanel->shadowMargin;
++    const int bodyWidth = std::max(1, frameWidth - *shadow.marginLeft - *shadow.marginRight);
++    const int bodyHeight = std::max(1, frameHeight - *shadow.marginTop - *shadow.marginBottom);
++    const Rect &cursor = acceptedCaret_;
++    const auto *screen = screenForCaret();
++    const double scale = (dpi_ > 0 ? dpi_ : 96) / 96.0;
++    int left = cursor.left(), top = cursor.bottom();
++    if (screen) {
++        // Leave modest room for growth when opening near the edge. This affects
++        // the origin only; it never pads the visible candidate row.
++        const int lastLeft = std::max(screen->left(), screen->right() - bodyWidth);
++        const int reserve = std::min({int(std::lround(224 * scale)), screen->width() / 6,
++                                      (lastLeft - screen->left()) / 3});
++        const bool adjacent = !hiddenAt_ ||
++            (now(CLOCK_MONOTONIC) - hiddenAt_ < 900000 &&
++             previousLeft_ + bodyWidth + 2 * reserve >= cursor.left());
++        const bool keep = !recover && haveAnchor_ && anchorScreen_ == *screen &&
++                          sameCaretLine(cursor, anchorCursor_) && adjacent;
++        if (keep) {
++            // Shrinking cannot move this origin right. Only a real collision
++            // with the display edge can move it left during this composition.
++            left = previousLeft_;
++            if (left > lastLeft) {
++                const int overflow = left - lastLeft;
++                int extra = std::min({reserve, overflow, int(std::lround(48 * scale))});
++                if (hasContinuingCandidates_) {
++                    extra = std::min(extra, std::max(0, sharedCandidateAdvance_ - overflow));
++                }
++                left = lastLeft - extra;
++            }
+         } else {
+-            newY = y + (h ? h : (10 * ((dpi_ < 0 ? 96.0 : dpi_) / 96.0)));
++            if (!recover || !haveAnchor_ || !sameCaretLine(cursor, anchorCursor_)) {
++                anchorCursor_ = cursor;
++            }
++            left = std::clamp(anchorCursor_.left(), screen->left(), lastLeft - (recover ? 0 : reserve));
+         }
++        top = anchorCursor_.top() + (anchorCursor_.height() ? anchorCursor_.height()
++                                                           : int(std::lround(10 * scale)));
++        if (top + bodyHeight > screen->bottom()) {
++            top = anchorCursor_.top() - bodyHeight;
++        }
++        top = std::clamp(top, screen->top(), std::max(screen->top(), screen->bottom() - bodyHeight));
++        previousLeft_ = left;
++        anchorScreen_ = *screen;
++        haveAnchor_ = targetWidth_ > 0;
++    }
++    hiddenAt_ = 0;
++    left -= *shadow.marginLeft;
++    top -= *shadow.marginTop;
++    // On Mutter/X11 a resized redirected window can show its old texture
++    // squeezed to the new size for one frame. Keep its backing pixmap stable
++    // and let the bounding shape delimit the visible popup and input region.
++    const int nativeWidth = useShape_ && screen
++        ? std::max({backingWidth_, screen->width(), frameWidth}) : frameWidth;
++    const int nativeHeight = useShape_ ? std::max(backingHeight_, frameHeight) : frameHeight;
++    const bool resizeBacking = nativeWidth != backingWidth_ || nativeHeight != backingHeight_;
++    xcb_params_configure_window_t wc{};
++    uint16_t mask = 0;
++    if (!positioned_ || windowX_ != left || windowY_ != top) {
++        windowX_ = wc.x = left;
++        windowY_ = wc.y = top;
++        mask |= XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y;
++    }
++    if (resizeBacking) {
++        wc.width = nativeWidth;
++        wc.height = nativeHeight;
++        mask |= XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT;
++    }
++    if (raise || !positioned_) {
++        wc.stack_mode = XCB_STACK_MODE_ABOVE;
++        mask |= XCB_CONFIG_WINDOW_STACK_MODE;
++    }
++    if (mask) {
++        xcb_aux_configure_window(ui_->connection(), wid_, mask, &wc);
++    }
++    if (resizeBacking) {
++        cairo_xcb_surface_set_size(surface_.get(), nativeWidth, nativeHeight);
++        backingWidth_ = nativeWidth;
++        backingHeight_ = nativeHeight;
++    }
++    Window::resize(frameWidth, frameHeight);
++    positioned_ = true;
++}
+ 
+-        if ((newX + static_cast<int>(actualWidth)) > closestScreen->right()) {
+-            newX = closestScreen->right() - actualWidth;
+-        }
++void XCBInputWindow::updateDPI() {
++    const int dpi = ui_->dpiByPosition(acceptedCaret_.left(), acceptedCaret_.top());
++    if (dpi != dpi_) {
++        horizontalSlots_.clear();
++        dpi_ = dpi;
++    }
++
++    setFontDPI(dpi_);
++}
++
++int XCBInputWindow::springWidth(double t) const {
++    const double phase = 5.0 * t;
++    const double remaining = 1.0 - t;
++    const double eased = (1.0 - (1.0 + phase) * std::exp(-phase)) /
++                         (1.0 - 6.0 * std::exp(-5.0)) +
++                         initialSlope_ * t * remaining * remaining * remaining;
++    return startWidth_ + std::lround((targetWidth_ - startWidth_) * eased);
++}
+ 
+-        if ((newY + static_cast<int>(actualHeight)) > closestScreen->bottom()) {
+-            if (newY > closestScreen->bottom()) {
+-                newY = closestScreen->bottom() - actualHeight - 40;
+-            } else { /* better position the window */
+-                newY = newY - actualHeight - ((h == 0) ? 40 : h);
++int XCBInputWindow::transitionTo(int width, bool allowAnimation, bool deleting) {
++    const bool running = resizeTimer_ && resizeTimer_->isEnabled();
++    if (width == targetWidth_) {
++        return running ? displayedWidth_ : width;
++    }
++    const auto nowUsec = now(CLOCK_MONOTONIC);
++    uint64_t duration = 1000ULL * *parent_->config().candidateResizeDuration;
++    const int delta = width - displayedWidth_;
++    const double scale = (dpi_ > 0 ? dpi_ : 96) / 96.0;
++    double slope = 0;
++    if (running && deleting && delta && endTime_ > startTime_) {
++        // Match the previous spring's velocity on another Backspace.
++        const double span = endTime_ - startTime_;
++        const double t = std::clamp((nowUsec - startTime_) / span, 0.0, 1.0);
++        const double rate = 25 * t * std::exp(-5 * t) / (1 - 6 * std::exp(-5.0)) +
++                            initialSlope_ * (1-t) * (1-t) * (1-4*t);
++        slope = std::clamp(rate * (targetWidth_ - startWidth_) / span * duration / delta, 0.0, 2.0);
++    } else if (running) {
++        duration = endTime_ > nowUsec ? endTime_ - nowUsec : 0;
++    }
++    startWidth_ = displayedWidth_;
++    targetWidth_ = width;
++    initialSlope_ = slope;
++    resizeTimer_.reset();
++    const bool small = deleting ? std::abs(delta) < std::lround(12 * scale) :
++        (std::abs(delta) < std::lround(88 * scale) || 8LL * std::abs(delta) < startWidth_);
++    if (!useShape_ || !allowAnimation || !duration || !delta || (!running && small) ||
++        (!deleting && !running && startTime_ && nowUsec - startTime_ < 400000)) {
++        return width;
++    }
++    // Present the first contraction together with the new candidate row.
++    const auto lead = deleting ? std::min<uint64_t>(12000, duration / 4) : 0;
++    startTime_ = nowUsec - lead;
++    endTime_ = startTime_ + duration;
++    resizeTimer_ = parent_->instance()->eventLoop().addTimeEvent(
++        CLOCK_MONOTONIC, nowUsec + 6000, 1000,
++        [this, duration](EventSourceTime *timer, uint64_t) {
++            auto *ic = inputContext_.get();
++            if (!ic || !visible()) {
++                return true;
++            }
++            const double progress = std::min(1.0,
++                double(now(CLOCK_MONOTONIC) - startTime_) / duration);
++            const int w = springWidth(progress);
++            if (w != displayedWidth_ || progress >= 1.0) {
++                drawFrame(w, this->height(), false, progress < 1.0,
++                          progress >= 1.0 && recoverAfterResize_);
++            }
++            if (progress < 1.0) {
++                timer->setNextInterval(8000);
++                timer->setOneShot();
++            }
++            return true;
++        });
++    return springWidth(double(lead) / duration);
++}
++
++// During forward typing, avoid pulling the same candidate left and right.
++int XCBInputWindow::holdSurvivingSlots(int slack) {
++    if (slack <= 0 || horizontalSlots_.empty() || presentedSlots_.empty()) {
++        return 0;
++    }
++    int offset = 0;
++    for (size_t i = 0; i < horizontalSlots_.size(); ++i) {
++        auto &slot = horizontalSlots_[i];
++        if (i < presentedSlots_.size() && !slot.text.empty() &&
++            slot.text == presentedSlots_[i].text) {
++            const int retreat = presentedSlots_[i].left - slot.left;
++            if (retreat <= slack) {
++                offset = std::max(offset, retreat);
+             }
+         }
+-        x = newX;
+-        y = newY;
++        slot.left += offset;
+     }
++    return offset;
++}
+ 
+-    // exclude shadow border width
+-    x -= leftSW;
+-    y -= topSW;
+-
+-    xcb_params_configure_window_t wc;
+-    wc.x = x;
+-    wc.y = y;
+-    wc.stack_mode = XCB_STACK_MODE_ABOVE;
+-    xcb_aux_configure_window(ui_->connection(), wid_,
+-                             XCB_CONFIG_WINDOW_STACK_MODE |
+-                                 XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y,
+-                             &wc);
++void XCBInputWindow::scheduleShrink(int width, bool allowAnimation, bool recover) {
++    if (shrinkTimer_ && shrinkTimer_->isEnabled() && pendingWidth_ == width &&
++        pendingAnimation_ == allowAnimation && pendingRecovery_ == recover) {
++        return;
++    }
++    pendingWidth_ = width;
++    pendingAnimation_ = allowAnimation;
++    pendingRecovery_ = recover;
++    // Coalesce candidate changes while typing or holding Backspace.
++    shrinkTimer_ = parent_->instance()->eventLoop().addTimeEvent(
++        CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + 75000, 1000,
++        [this](EventSourceTime *, uint64_t) {
++            if (auto *ic = inputContext_.get(); ic && visible()) {
++                transitionTo(pendingWidth_, pendingAnimation_);
++                if (!resizeTimer_ || !resizeTimer_->isEnabled()) {
++                    drawFrame(targetWidth_, height(), false, false, pendingRecovery_);
++                }
++            }
++            return true;
++        });
+ }
+ 
+-void XCBInputWindow::updateDPI(InputContext *inputContext) {
+-    dpi_ = ui_->dpiByPosition(inputContext->cursorRect().left(),
+-                              inputContext->cursorRect().top());
++void XCBInputWindow::flushEdgeFrame() {
++    if (!edgeBegan_) {
++        return;
++    }
++    edgeBegan_ = 0;
++    if (auto *ic = inputContext_.get(); ic && ic->hasFocus() && visible()) {
++        targetWidth_ = edgeWidth_;
++        drawFrame(edgeWidth_, edgeHeight_, false);
++    }
++}
+ 
+-    setFontDPI(dpi_);
++void XCBInputWindow::deferEdgeFrame(int width, int height, bool contentChanged) {
++    const auto t = now(CLOCK_MONOTONIC);
++    const bool identical = edgeBegan_ && width == edgeWidth_ && height == edgeHeight_ &&
++                           !contentChanged;
++    if (identical) {
++        return;
++    }
++    if (!edgeBegan_) {
++        edgeBegan_ = t;
++    }
++    edgeWidth_ = width;
++    edgeHeight_ = height;
++    // Batch only edits which would push the entire popup left. Never wait
++    // indefinitely for the user to stop typing.
++    const auto due = std::min(edgeBegan_ + 100000, t + 55000);
++    if (edgeTimer_) {
++        edgeTimer_->setTime(due);
++        edgeTimer_->setOneShot();
++    } else {
++        edgeTimer_ = parent_->instance()->eventLoop().addTimeEvent(
++            CLOCK_MONOTONIC, due, 1000, [this](EventSourceTime *, uint64_t) {
++                flushEdgeFrame();
++                return true;
++            });
++    }
+ }
+ 
+ void XCBInputWindow::update(InputContext *inputContext) {
+     if (!wid_) {
+         return;
+     }
+-    auto oldVisible = visible();
++    const bool oldVisible = visible();
++    const int oldDpi = dpi_;
++    const int oldPage = candidatePage_;
++    const int oldSelection = candidateIndex_;
++    const bool oldHasPrev = hasPrev_;
++    const bool hadCandidates = !horizontalSlots_.empty();
++    const bool sameFont = layoutFont_ == *parent_->config().font;
++    const bool sameContext = inputContext_.get() == inputContext;
+     if (inputContext) {
+-        updateDPI(inputContext);
++        observeCaret(inputContext, !oldVisible || !sameContext);
++        updateDPI();
++    }
++    const Rect *screen = inputContext ? screenForCaret() : nullptr;
++    const bool screenChanged = haveAnchor_ && screen && anchorScreen_ != *screen;
++    if (screenChanged) {
++        horizontalSlots_.clear();
+     }
+-    auto [width, height] = InputWindow::update(inputContext);
++    auto [width, height] =
++        InputWindow::update(inputContext);
+     if (!visible()) {
++        edgeTimer_.reset();
++        edgeBegan_ = 0;
++        caretTimer_.reset();
++        shrinkTimer_.reset();
++        resizeTimer_.reset();
++        targetWidth_ = 0;
++        lastPreedit_.clear();
++        if (!sameContext || !inputContext) {
++            haveAnchor_ = false;
++        }
+         if (oldVisible) {
++            hiddenAt_ = now(CLOCK_MONOTONIC);
+             xcb_unmap_window(ui_->connection(), wid_);
+         }
+         return;
+     }
+ 
+-    if (width != this->width() || height != this->height()) {
+-        resize(width, height);
++    const auto &panel = inputContext->inputPanel();
++    std::string preedit = panel.preedit().empty()
++        ? panel.clientPreedit().toString() : panel.preedit().toString();
++    const bool samePreedit = preedit == lastPreedit_;
++    const bool shorter = preedit.size() < lastPreedit_.size();
++    if (!samePreedit || !sameContext || !oldVisible) {
++        compactRow_ = sameContext && oldVisible && shorter;
++    }
++    lastPreedit_ = std::move(preedit);
++    const bool composing = nCandidates_ || !lastPreedit_.empty();
++    if (!composing || !oldVisible || !sameContext || !targetWidth_ ||
++        !sameFont || screenChanged || oldDpi != dpi_) {
++        edgeTimer_.reset();
++        edgeBegan_ = 0;
++        shrinkTimer_.reset();
++        resizeTimer_.reset();
++        if (!sameContext || !sameFont || screenChanged || oldDpi != dpi_ || !composing) {
++            haveAnchor_ = false;
++        }
++        targetWidth_ = composing ? width : 0;
++        drawFrame(width, height, !oldVisible);
++        return;
++    }
++
++    const bool pageChanged = candidatePage_ != oldPage || hasPrev_ != oldHasPrev;
++    const bool sameContent = samePreedit && !candidateTextsChanged_ && !pageChanged;
++    const double scale = (dpi_ > 0 ? dpi_ : 96) / 96.0;
++    const auto &shadow = *parent_->theme().inputPanel->shadowMargin;
++    if (!compactRow_ && !pageChanged && !lastPreedit_.empty() &&
++        haveAnchor_ && screen && height == this->height()) {
++        const int space = screen->right() - previousLeft_ +
++                          *shadow.marginLeft + *shadow.marginRight - horizontalRowWidth_;
++        const int budget = std::min(int(std::lround(48 * scale)), space);
++        const int added = holdSurvivingSlots(budget);
++        width = std::max(width, horizontalRowWidth_ + added);
++    }
++    const int bodyWidth = std::max(1, width - *shadow.marginLeft - *shadow.marginRight);
++    const bool overflow = haveAnchor_ && screen && sameCaretLine(acceptedCaret_, anchorCursor_) &&
++                          previousLeft_ > screen->left() &&
++                          previousLeft_ + bodyWidth > screen->right();
++    if (overflow && width > this->width() && !pageChanged && oldSelection == candidateIndex_ &&
++        (!samePreedit || edgeBegan_)) {
++        shrinkTimer_.reset();
++        resizeTimer_.reset();
++        deferEdgeFrame(width, height, !sameContent);
++        return;
++    }
++    edgeBegan_ = 0;
++    edgeTimer_.reset();
++
++    if (compactRow_ && !pageChanged && !lastPreedit_.empty() &&
++        height == this->height() && !overflow) {
++        const int naturalLeft = screen ? std::clamp(anchorCursor_.left(), screen->left(),
++            std::max(screen->left(), screen->right() - bodyWidth)) : previousLeft_;
++        recoverAfterResize_ = haveAnchor_ && sameCaretLine(acceptedCaret_, anchorCursor_) &&
++                              naturalLeft - previousLeft_ > int(std::lround(8 * scale));
++        const bool queuedRecovery = shrinkTimer_ && shrinkTimer_->isEnabled() &&
++                                    pendingRecovery_ && sameContent && pendingWidth_ == width;
++        if (!queuedRecovery) {
++            shrinkTimer_.reset();
++        }
++        const int frame = transitionTo(width, hadCandidates && !horizontalSlots_.empty(), true);
++        const bool moving = resizeTimer_ && resizeTimer_->isEnabled();
++        drawFrame(frame, height, false, moving);
++        if (recoverAfterResize_ && !moving) {
++            scheduleShrink(width, false, true);
++        }
++        return;
++    }
++    recoverAfterResize_ = false;
++    const bool animating = resizeTimer_ && resizeTimer_->isEnabled();
++    // Retarget from the painted edge without prolonging a burst of edits.
++    if (animating && (width != targetWidth_ || height != this->height())) {
++        shrinkTimer_.reset();
++        const bool anchored = screen && haveAnchor_ &&
++            sameCaretLine(acceptedCaret_, anchorCursor_) &&
++            previousLeft_ + bodyWidth <= screen->right();
++        if (height != this->height()) {
++            resizeTimer_.reset();
++            targetWidth_ = width;
++        } else {
++            transitionTo(width, anchored);
++        }
++    } else if (!animating) {
++        if (targetWidth_ > width) {
++            // Key release and highlight updates often follow the original page
++            // change with identical contents. Preserve that pending decision.
++            const bool alreadyPending = shrinkTimer_ && shrinkTimer_->isEnabled() &&
++                                        pendingWidth_ == width;
++            if (!alreadyPending || !sameContent) {
++                const bool staysNearCaret = haveAnchor_ &&
++                    previousLeft_ + width + std::lround(144.0 * scale) >=
++                        acceptedCaret_.left();
++                const bool allowAnimation = hadCandidates && !horizontalSlots_.empty() &&
++                    !lastPreedit_.empty() && height == this->height() && staysNearCaret;
++                scheduleShrink(width, allowAnimation);
++            }
++        } else {
++            shrinkTimer_.reset();
++            const bool staysPut = screen && haveAnchor_ &&
++                sameCaretLine(acceptedCaret_, anchorCursor_) &&
++                previousLeft_ + bodyWidth <= screen->right();
++            transitionTo(width, staysPut && hadCandidates && !horizontalSlots_.empty() &&
++                         height == this->height());
++        }
++    }
++    const bool inTransition = resizeTimer_ && resizeTimer_->isEnabled();
++    drawFrame(inTransition ? displayedWidth_ : targetWidth_, height,
++              false, inTransition);
++}
++
++void XCBInputWindow::drawFrame(int width, int height,
++                               bool map, bool intermediate, bool recover) {
++    const int layoutWidth = intermediate ? std::max(targetWidth_, int(this->width())) : width;
++    contentSurface_.reset(cairo_surface_create_similar(
++        surface_.get(), CAIRO_CONTENT_COLOR_ALPHA, width, height));
++    cairo_t *c = cairo_create(contentSurface_.get());
++    paint(c, width, height, /*scale=*/1.0, intermediate && width < targetWidth_, intermediate ? targetWidth_ : 0);
++    cairo_destroy(c);
++    cairo_surface_flush(contentSurface_.get());
++    presentedSlots_ = horizontalSlots_;
++
++    const bool visualResize = width != displayedWidth_ || height != this->height();
++    map = map || !positioned_;
++    configureGeometry(layoutWidth, height, map, recover);
++    if (useShape_ && (visualResize || !shaped_)) {
++        xcb_rectangle_t clip{0, 0, static_cast<uint16_t>(width), static_cast<uint16_t>(height)};
++        xcb_shape_rectangles(ui_->connection(), XCB_SHAPE_SO_SET, XCB_SHAPE_SK_BOUNDING,
++                             XCB_CLIP_ORDERING_UNSORTED, wid_, 0, 0, 1, &clip);
++        shaped_ = true;
++    }
++    displayedWidth_ = width;
++    if (visualResize) {
+         if (atomBlur_) {
+             Rect rect(0, 0, width, height);
+             shrink(rect, *ui_->parent()->theme().inputPanel->blurMargin);
+@@ -179,13 +560,9 @@
+         }
+     }
+ 
+-    cairo_t *c = cairo_create(prerender());
+-    updatePosition(inputContext);
+-    if (!oldVisible) {
++    if (map) {
+         xcb_map_window(ui_->connection(), wid_);
+     }
+-    paint(c, width, height, /*scale=*/1.0);
+-    cairo_destroy(c);
+     render();
+ }
+ 
+@@ -196,7 +573,9 @@
+     case XCB_EXPOSE: {
+         auto *expose = reinterpret_cast<xcb_expose_event_t *>(event);
+         if (expose->window == wid_) {
+-            repaint();
++            if (visible() && contentSurface_ && expose->count == 0) {
++                render();
++            }
+             return true;
+         }
+         break;
+@@ -207,6 +586,18 @@
+             break;
+         }
+         if (buttonPress->detail == XCB_BUTTON_INDEX_1) {
++            // During the short edge hold the visible row can precede the
++            // engine. Only select a candidate that the clicked slot still shows.
++            if (edgeBegan_) {
++                for (size_t i = 0; i < candidateRegions_.size(); ++i) {
++                    if (candidateRegions_[i].contains(buttonPress->event_x, buttonPress->event_y) &&
++                        (i >= presentedSlots_.size() || i >= horizontalSlots_.size() ||
++                         presentedSlots_[i].text != horizontalSlots_[i].text)) {
++                        flushEdgeFrame();
++                        return true;
++                    }
++                }
++            }
+             click(buttonPress->event_x, buttonPress->event_y);
+         } else if (buttonPress->detail == XCB_BUTTON_INDEX_4) {
+             wheel(/*up=*/true);
+@@ -217,7 +608,7 @@
+     }
+     case XCB_MOTION_NOTIFY: {
+         auto *motion = reinterpret_cast<xcb_motion_notify_event_t *>(event);
+-        if (motion->event == wid_) {
++        if (motion->event == wid_ && !edgeBegan_) {
+             if (hover(motion->event_x, motion->event_y)) {
+                 repaint();
+             }
+@@ -227,7 +618,7 @@
+     }
+     case XCB_LEAVE_NOTIFY: {
+         auto *leave = reinterpret_cast<xcb_leave_notify_event_t *>(event);
+-        if (leave->event == wid_) {
++        if (leave->event == wid_ && !edgeBegan_) {
+             if (hover(-1, -1)) {
+                 repaint();
+             }
+@@ -239,13 +630,27 @@
+     return false;
+ }
+ 
++void XCBInputWindow::render() {
++    auto *cr = cairo_create(surface_.get());
++    cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
++    cairo_set_source_surface(cr, contentSurface_.get(), 0, 0);
++    cairo_rectangle(cr, 0, 0, displayedWidth_, height());
++    cairo_fill(cr);
++    cairo_destroy(cr);
++}
++
+ void XCBInputWindow::repaint() {
+     if (!visible()) {
+         return;
+     }
++    if (edgeBegan_) {
++        return;
++    }
+     if (auto *surface = prerender()) {
+         cairo_t *c = cairo_create(surface);
+-        paint(c, width(), height(), /*scale=*/1.0);
++        const bool moving = resizeTimer_ && resizeTimer_->isEnabled();
++        paint(c, displayedWidth_, height(), /*scale=*/1.0,
++              moving && displayedWidth_ < targetWidth_, moving ? targetWidth_ : 0);
+         cairo_destroy(c);
+         render();
+     }
+--- a/src/ui/classic/xcbinputwindow.h
++++ b/src/ui/classic/xcbinputwindow.h
+@@ -23,10 +23,48 @@
+ 
+     bool filterEvent(xcb_generic_event_t *event) override;
+ 
+-    void updateDPI(InputContext *inputContext);
++    void updateDPI();
+ 
+ private:
++    const Rect *screenForCaret() const;
+     void repaint();
++    void render() override;
++    bool sameCaretLine(const Rect &cursor, const Rect &origin) const;
++    void observeCaret(InputContext *ic, bool fresh);
++    void deferEdgeFrame(int width, int height, bool contentChanged);
++    void flushEdgeFrame();
++    int holdSurvivingSlots(int slack);
++    void configureGeometry(int width, int height, bool raise, bool recover);
++    void drawFrame(int width, int height, bool map,
++                   bool intermediate = false, bool recover = false);
++    int springWidth(double progress) const;
++    int transitionTo(int width, bool allowAnimation, bool deleting = false);
++    void scheduleShrink(int width, bool allowAnimation, bool recover = false);
++    std::unique_ptr<EventSourceTime> shrinkTimer_;
++    int pendingWidth_ = 0;
++    bool pendingAnimation_ = false, pendingRecovery_ = false;
++    Rect acceptedCaret_, proposedCaret_;
++    std::unique_ptr<EventSourceTime> caretTimer_, edgeTimer_;
++    uint64_t edgeBegan_ = 0;
++    int edgeWidth_ = 0, edgeHeight_ = 0;
++    std::vector<HorizontalSlot> presentedSlots_;
++    bool compactRow_ = false;
++    std::string lastPreedit_;
++    std::unique_ptr<EventSourceTime> resizeTimer_;
++    bool recoverAfterResize_ = false;
++    double initialSlope_ = 0;
++    int startWidth_ = 0;
++    int targetWidth_ = 0;
++    uint64_t startTime_ = 0, endTime_ = 0;
++    int displayedWidth_ = 0;
++    int backingWidth_ = 0, backingHeight_ = 0;
++    int windowX_ = 0, windowY_ = 0;
++    bool positioned_ = false;
++    bool useShape_ = false, shaped_ = false;
++    uint64_t hiddenAt_ = 0;
++    int previousLeft_ = 0;
++    bool haveAnchor_ = false;
++    Rect anchorCursor_, anchorScreen_;
+     xcb_atom_t atomBlur_;
+     int dpi_ = -1;
+ };

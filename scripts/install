@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Install Lune for the current user. Changed files are backed up before replacement."""
+import argparse
+from datetime import datetime
+import os
+from pathlib import Path
+import re
+import shutil
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+HOME = Path.home()
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
+DATA = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share")
+STATE = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state")
+
+
+def install():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--with-renderer", action="store_true", help="also install the built X11 renderer")
+    args = parser.parse_args()
+    fcitx = DATA / "fcitx5"
+    files = {}
+
+    def include(folder, names, target):
+        for name in names.split():
+            files[target / name] = ROOT / folder / name
+
+    include("fcitx5", "config profile", CONFIG / "fcitx5")
+    include("fcitx5/conf", "classicui.conf rime.conf pinyin.conf chttrans.conf punctuation.conf notifications.conf",
+            CONFIG / "fcitx5/conf")
+    include("rime", "default.custom.yaml luna_pinyin_simp.custom.yaml local_terms.schema.yaml "
+            "local_terms.dict.yaml local_it.dict.yaml local_long.dict.yaml local_symbols.yaml essay.txt "
+            "melt_eng.schema.yaml melt_eng.dict.yaml", fcitx / "rime")
+    include("rime/en_dicts", "en.dict.yaml en_ext.dict.yaml cn_en.txt", fcitx / "rime/en_dicts")
+    theme = "themes/catppuccin-mocha-mauve"
+    include(theme, "theme.conf highlight.svg panel.svg arrow.png radio.png", fcitx / theme)
+    include("inputmethod", "rime.conf", fcitx / "inputmethod")
+    include("icons", "fcitx-rime.svg fcitx-rime-rounded-white.svg org.fcitx.Fcitx5.fcitx-rime.svg",
+            DATA / "icons/Yaru-magenta/24x24/apps")
+    include("icons", "fcitx-rime-rounded-white.svg", DATA / "icons/hicolor/scalable/apps")
+    include("scripts", "update-rime-it-dict", HOME / ".local/bin")
+    if args.with_renderer:
+        library = HOME / ".local/lib/fcitx5/candidate-width"
+        include("build", "libclassicui-motion.so libclassicui-select.so", library)
+        vendor = Path("/usr/share/fcitx5/addon/classicui.conf").read_text()
+        entry, count = re.subn(r"^Library=.*$", lambda _: f"Library={library}/libclassicui-select",
+                               vendor, flags=re.MULTILINE)
+        if count != 1:
+            parser.exit(1, "无法识别系统 Classic UI 插件描述。\n")
+        files[fcitx / "addon/classicui.conf"] = entry.encode()
+    for src in files.values():
+        if isinstance(src, Path) and not src.is_file():
+            parser.exit(1, f"找不到 {src}。动画组件请先运行 scripts/build-renderer。\n")
+
+    backup = STATE / "lune-input/backups" / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    for dest, src in files.items():
+        data = src.read_bytes() if isinstance(src, Path) else src
+        if dest.is_file() and dest.read_bytes() == data:
+            continue
+        if dest.exists() or dest.is_symlink():
+            saved = backup / dest.relative_to(dest.anchor)
+            saved.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            shutil.copy2(dest, saved, follow_symlinks=False)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=dest.parent, delete=False) as handle:
+            tmp = Path(handle.name)
+            try:
+                handle.write(data)
+                handle.flush()
+                tmp.chmod(0o755 if dest.name == "update-rime-it-dict" else 0o644)
+                tmp.replace(dest)
+            finally:
+                tmp.unlink(missing_ok=True)
+    print("已安装到当前用户目录。")
+    if backup.exists():
+        print(f"本次覆盖前的文件备份在 {backup}")
+
+
+if __name__ == "__main__":
+    install()
