@@ -15,8 +15,8 @@
     <img src="https://img.shields.io/badge/Fcitx5-5.1.7-526A83" alt="Fcitx5 5.1.7">
     <img src="https://img.shields.io/badge/Rime-朙月拼音-7D6BA3" alt="Rime 朙月拼音">
   </p>
-  <img src="docs/candidates.png" width="822" alt="Lune 输入 shurufa 时的横排九候选">
-  <p><sub>Catppuccin Mocha 圆角主题与横排九候选</sub></p>
+  <img src="docs/candidates-hidpi.png" width="822" alt="Lune 输入 shurufa 时的横排九候选">
+  <p><sub>Catppuccin Mocha 圆角主题 · 拼音按音节分隔 · 横排九候选</sub></p>
 </div>
 
 Lune 将朙月拼音、实用词库与桌面外观整合为一套输入方案，适合在 Ubuntu 上日常中文输入与中英混输。
@@ -32,7 +32,7 @@ Lune 将朙月拼音、实用词库与桌面外观整合为一套输入方案，
 ```bash
 sudo apt install fcitx5 fcitx5-rime fcitx5-chinese-addons fcitx5-config-qt \
   fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 fcitx5-frontend-qt5 \
-  rime-data-luna-pinyin rime-data-stroke librime-bin fonts-noto-cjk im-config
+  rime-data-luna-pinyin rime-data-stroke librime-bin fonts-noto-cjk fonts-hanazono im-config
 ./scripts/install
 im-config -n fcitx5
 ```
@@ -47,9 +47,10 @@ im-config -n fcitx5
 | --- | --- |
 | 切换中英文 | 轻按左 Shift 或右 Shift。两侧行为一致，切换时关闭光标旁的状态提示。 |
 | 选择候选词 | 每页最多九个，数字 1–9 直接选词。拼音光标在末尾时按 → 选下一个，空格确认。 |
+| 查看拼音切分 | 输入 `shurufa` 显示为 `shu'ru'fa`。单引号标记拼音引擎识别的音节边界。 |
 | 改一个拼错的字母 | 按 ← 回到拼音中间，用竖线定位。此时 → 先向右移动光标。 |
 | 区分前后鼻音 | 仅对 en/eng、in/ing 开启模糊音。an/ang 保持区分。 |
-| 中英混输 | 输入 `wifimima` 可候选「Wi-Fi密码」，`macosbanben` 可候选「macOS版本」。 |
+| 中英混输 | 简拼 `key` 优先候选「可以」。输入 `wifimima` 可候选「Wi-Fi密码」，`macosbanben` 可候选「macOS版本」。 |
 | 补全长词 | 输入 `caozuox` 可候选「操作系统」，`rengongzh` 可候选「人工智能」。 |
 | 输入等号 | 没有正在编辑的拼音时，`=` 直接上屏。有候选时，`=` 和 `-` 可翻页。 |
 
@@ -86,7 +87,7 @@ sudo apt install build-essential pkg-config patch xz-utils binutils \
 
 ## 调整配置
 
-打开 `fcitx5-configtool`，进入「附加组件 → 经典用户界面」调整字体、主题和候选方向。默认候选字体为 Noto Sans CJK SC Medium 11。模糊音和每页候选数由 Rime 方案控制。
+打开 `fcitx5-configtool`，进入「附加组件 → 经典用户界面」调整字体、主题和候选方向。默认候选字体为 Noto Sans CJK SC Medium 11。扩展汉字由花园明朝字体补充显示。模糊音和每页候选数由 Rime 方案控制。
 
 | 设置 | 仓库文件 | 默认值 |
 | --- | --- | --- |

@@ -5,6 +5,7 @@ patch:
       - pinyin:/abbreviation
       - pinyin:/spelling_correction
       - pinyin:/key_correction
+  speller/delimiter: "' "
   menu/page_size: 9
   switches/+:
     - {name: _linear, reset: 1}
@@ -21,7 +22,7 @@ patch:
     enable_completion: true
     enable_user_dict: false
     enable_sentence: false
-    initial_quality: -0.20
+    initial_quality: -1.2
     comment_format:
     - xform/.+//
   cn_en:
@@ -38,6 +39,6 @@ patch:
     enable_completion: false
     enable_sentence: false
     enable_user_dict: false
-    initial_quality: 1.05
+    initial_quality: -0.8
     comment_format:
     - xform/.+//
