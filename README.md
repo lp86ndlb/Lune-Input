@@ -1,12 +1,29 @@
-# Lune Input
+<div align="center">
+  <img src="icons/fcitx-rime.svg" width="72" height="72" alt="Lune Input 图标">
+  <h1>Lune Input</h1>
+  <p><strong>为 Ubuntu 桌面打磨的中文输入方案</strong></p>
+  <p>基于 Fcitx5 与 Rime · 致敬朙月拼音</p>
+  <p>
+    <a href="#快速开始">快速开始</a> ·
+    <a href="#按键和词库">按键与词库</a> ·
+    <a href="#候选框动画">候选框动画</a> ·
+    <a href="#调整配置">配置</a> ·
+    <a href="#来源与致谢">致谢</a>
+  </p>
+  <p>
+    <img src="https://img.shields.io/badge/Ubuntu-24.04-E95420?logo=ubuntu&logoColor=white" alt="Ubuntu 24.04">
+    <img src="https://img.shields.io/badge/Fcitx5-5.1.7-526A83" alt="Fcitx5 5.1.7">
+    <img src="https://img.shields.io/badge/Rime-朙月拼音-7D6BA3" alt="Rime 朙月拼音">
+  </p>
+  <img src="docs/candidates.png" width="822" alt="Lune 输入 shurufa 时的横排九候选">
+  <p><sub>Catppuccin Mocha 圆角主题与横排九候选</sub></p>
+</div>
 
-Lune 是为 Ubuntu 桌面打磨的中文输入方案。名字取自法语里的“月亮”，向朙月拼音致意。底层由 Fcitx5 和 Rime 提供，Lune 调整了词库、按键和候选框，让连续输入和退格时的文字更容易看清。
+Lune 将朙月拼音、实用词库与桌面外观整合为一套输入方案，适合在 Ubuntu 上日常中文输入与中英混输。
 
-![输入 shurufa 时的 Lune 候选框，首选为「输入法」，下方横排九个候选](docs/candidates.png)
-
-*Catppuccin Mocha 圆角主题。紫色标出当前候选，拼音中的竖线标出编辑位置。*
-
-[快速开始](#快速开始) · [按键和词库](#按键和词库) · [候选框动画](#候选框动画) · [调整配置](#调整配置) · [来源与致谢](#来源与致谢)
+- **输入体验**　横排九候选，左右 Shift 切换中英文，支持拼音纠错与前后鼻音配置。
+- **词库**　支持英文候选、中英混输和长词补全，内置可手动更新的 IT 专业词表。
+- **视觉设计**　Catppuccin Mocha 圆角主题、竖线编辑光标，以及适配 X11 的候选框右边缘过渡。
 
 ## 快速开始
 
