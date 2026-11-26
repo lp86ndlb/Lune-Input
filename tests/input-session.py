@@ -62,22 +62,42 @@ def check():
 
     def test_arrows():
         left, right = 0xff51, 0xff53
-        assert type_word("shang") and caret == 5
-        for arrow, offset in [(right, 5), (left, 4), (right, 5)]:
-            key(arrow)
-            assert panel() and (caret, highlighted) == (offset, 0)
-        for offset in (4, 3, 2, 1, 0, 0):
-            key(left)
-            assert panel() and caret == offset
-        key(right)
-        assert panel() and caret == 1
 
-        type_word("shurfa")
-        key(left)
-        key(left)
-        key(ord("u"))
+        def move(sym, prefix):
+            key(sym)
+            assert panel() and highlighted == 0
+            assert preedit_text.encode()[:caret].decode() == prefix, (preedit_text, caret, prefix)
+
+        assert type_word("shang") and caret == 5
+        move(right, "shang")
+        move(left, "")
+        move(left, "")
+        move(right, "s")
+        for spelling, fa_start, ru_start in (("shurufa", "shu'ru", "shu"),
+                                             ("shu'ru'fa", "shu'ru'", "shu'")):
+            assert type_word(spelling)[0] == "输入法"
+            move(left, fa_start)
+            move(left, ru_start)
+            move(right, "shu'r")
+            move(left, ru_start)
+            move(left, "")
+            move(right, "s")
+
+        assert type_word("xi'en")
+        move(0xff96, "xi'")  # KP_Left
+        move(0xff98, "xi'e")  # KP_Right
+        key(0xff08)  # BackSpace
+        key(ord("a"))
         key(0xff57)  # End
-        assert panel()[0] == "输入法" and preedit_text == "shu'ru'fa"
+        assert panel()[0] == "西安" and preedit_text == "xi'an"
+
+        words = type_word("nihaoma")
+        ctx.SelectCandidate(words.index("你"))
+        move(left, "你hao")
+        move(left, "你")
+        move(left, "你")
+        move(right, "你h")
+        ctx.Reset()
 
         # The installed GTK switch must survive reopening and change real key events.
         settings_path = Path(os.environ["XDG_DATA_HOME"]) / "fcitx5/lune/settings.py"
@@ -106,10 +126,8 @@ def check():
             if enabled:
                 key(left)
                 assert panel() and (caret, highlighted) == (5, 0)
-                key(left)
-                assert panel() and caret == 4
-                key(right)
-                assert panel() and (caret, highlighted) == (5, 0)
+                move(left, "")
+                move(right, "s")
                 words = type_word("shang")
                 key(right)
                 assert key(32) == [words[1]]

@@ -168,7 +168,7 @@ class Window(Gtk.ApplicationWindow):
 
         self.page("输入")
         self.toggle("candidate_arrows", "左右方向键选词",
-                    "默认逐字母移动拼音光标。开启后，在拼音末尾按 → 选下一个候选，← 选回上一个。")
+                    "默认按 ← 跳到音节开头，按 → 前进一个字母。开启后，在拼音末尾用左右键选词。")
         native_tip = "" if settings.integration else "（需启用 Lune 输入集成）"
         self.toggle("raw", "Shift 切换时保留原文", "输入 hello 后轻按左或右 Shift，直接上屏 hello。" + native_tip,
                     settings.integration)

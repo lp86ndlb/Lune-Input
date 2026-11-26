@@ -1,5 +1,6 @@
 patch:
-  navigator/bindings/Left: left_by_char
+  navigator/bindings/Left: left_by_syllable
+  navigator/bindings/KP_Left: left_by_syllable
   selector/linear/bindings/Left: noop
   selector/linear/bindings/Right: noop
   selector/linear/bindings/KP_Left: noop

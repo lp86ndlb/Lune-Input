@@ -20,7 +20,7 @@ public:
     }
 
     rime::ProcessResult ProcessKeyEvent(const rime::KeyEvent &key) override {
-        if (!editArrows_ || key.modifier() != 0) {
+        if (key.modifier() != 0) {
             return rime::kNoop;
         }
         const int sym = key.keycode();
@@ -30,9 +30,13 @@ public:
             return rime::kNoop;
         }
         auto *ctx = engine_->context();
-        // The stock navigator wraps at either edge. Leave actual moves to it.
-        if (ctx->IsComposing() && ((left && ctx->caret_pos() == 0) ||
-                                  (right && ctx->caret_pos() == ctx->input().size()))) {
+        const auto pos = ctx->caret_pos();
+        const bool atEnd = pos == ctx->input().size();
+        if (!ctx->IsComposing() || (atEnd && !editArrows_)) {
+            return rime::kNoop;
+        }
+        // Rime wraps left at the start of the editable part, even after a converted prefix.
+        if ((left && pos <= ctx->composition().GetConfirmedPosition()) || (right && atEnd)) {
             return rime::kAccepted;
         }
         return rime::kNoop;
