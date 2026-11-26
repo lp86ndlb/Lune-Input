@@ -10,8 +10,10 @@ import gi
 import yaml
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gio, GLib, Gtk, Pango
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
+APP_ID = "io.github.lp86ndlb.LuneInput.Settings"
 DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "fcitx5/rime"
 PREFERENCES = DATA / "lune_preferences.yaml"
 SCHEMA = DATA / "build/luna_pinyin_simp.schema.yaml"
@@ -139,7 +141,6 @@ class Window(Gtk.ApplicationWindow):
     def __init__(self, app, settings):
         super().__init__(application=app, title="Lune 输入法设置")
         self.set_default_size(540, 430)
-        self.set_icon_name("fcitx-rime-rounded-white")
         self.settings = settings
         self.getters = {}
         self.controls = {}
@@ -266,7 +267,11 @@ class Window(Gtk.ApplicationWindow):
 
 class App(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id="io.github.lp86ndlb.LuneInput.Settings")
+        super().__init__(application_id=APP_ID)
+
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
+        Gtk.Window.set_default_icon_name(APP_ID)
 
     def do_activate(self):
         window = self.get_active_window()
@@ -284,4 +289,7 @@ class App(Gtk.Application):
 
 
 if __name__ == "__main__":
+    GLib.set_prgname(APP_ID)
+    GLib.set_application_name("Lune")
+    Gdk.set_program_class(APP_ID)
     sys.exit(App().run(sys.argv))

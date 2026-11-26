@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,7 @@ HOME = Path.home()
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
 DATA = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share")
 STATE = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state")
+APP_ID = "io.github.lp86ndlb.LuneInput.Settings"
 
 
 def install():
@@ -67,12 +69,17 @@ def install():
     files[schema_path] = schema.encode()
     settings = fcitx / "lune/settings.py"
     files[settings] = ROOT / "scripts/lune-settings"
+    icon_theme = DATA / "icons/hicolor"
+    app_icon = icon_theme / "scalable/apps" / f"{APP_ID}.svg"
+    files[app_icon] = ROOT / "icons" / app_icon.name
     escaped = re.sub(r'(["`$\\])', r'\\\1', str(settings)).replace("%", "%%")
     command = escaped.replace("\\", "\\\\")
-    files[DATA / "applications/io.github.lp86ndlb.LuneInput.Settings.desktop"] = (
-        "[Desktop Entry]\nType=Application\nName=Lune Input Settings\nName[zh_CN]=Lune 输入法设置\n"
-        f'Exec=/usr/bin/python3 "{command}"\nIcon=fcitx-rime-rounded-white\n'
-        "Categories=Settings;\nKeywords=Lune;Rime;Fcitx;拼音;输入法;\n"
+    files[DATA / "applications" / f"{APP_ID}.desktop"] = (
+        "[Desktop Entry]\nType=Application\nName=Lune\n"
+        "GenericName=Input Method Settings\nGenericName[zh_CN]=输入法设置\n"
+        f'Exec=/usr/bin/python3 "{command}"\nIcon={APP_ID}\n'
+        "Categories=Settings;\nKeywords=Rime;Fcitx;Pinyin;\n"
+        "Keywords[zh_CN]=Rime;Fcitx;拼音;输入法;设置;\n"
     ).encode()
     if args.with_integration or args.upgrade_integration:
         library = HOME / ".local/lib/fcitx5/lune"
@@ -116,6 +123,11 @@ def install():
                 tmp.replace(dest)
             finally:
                 tmp.unlink(missing_ok=True)
+        if dest == app_icon:
+            os.utime(icon_theme)
+            updater = shutil.which("gtk-update-icon-cache")
+            if updater and (icon_theme / "icon-theme.cache").is_file():
+                subprocess.run([updater, "-f", "-t", "-q", icon_theme], check=False)
     print("已安装到当前用户目录。")
     if backup.exists():
         print(f"本次覆盖前的文件备份在 {backup}")

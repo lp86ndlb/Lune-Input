@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="icons/fcitx-rime.svg" width="72" height="72" alt="Lune Input 图标">
+  <img src="icons/io.github.lp86ndlb.LuneInput.Settings.svg" width="72" height="72" alt="Lune 应用图标">
   <h1>Lune Input</h1>
   <p><strong>为 Ubuntu 桌面打磨的中文输入方案</strong></p>
   <p>基于 Fcitx5 与 Rime · 致敬朙月拼音</p>
@@ -91,7 +91,7 @@ sudo apt install build-essential pkg-config patch xz-utils binutils \
 
 ## 调整配置
 
-在应用列表搜索 **Lune 输入法设置**。打开窗口后修改选项，点击「应用」。窗口包含三个分页。
+在应用列表搜索 **Lune**，点击淡紫色月牙图标打开设置。修改选项后点击「应用」。窗口包含三个分页。
 
 | 分页 | 可调整的选项 |
 | --- | --- |

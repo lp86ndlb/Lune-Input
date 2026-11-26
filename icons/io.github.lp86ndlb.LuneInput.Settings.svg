@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>Lune</title>
+  <defs>
+    <linearGradient id="face" x2="100%" y2="100%">
+      <stop stop-color="#45475a"/>
+      <stop offset="55%" stop-color="#313244"/>
+      <stop offset="100%" stop-color="#1e1e2e"/>
+    </linearGradient>
+    <linearGradient id="moon" x2="90%" y2="100%">
+      <stop stop-color="#f5c2e7"/>
+      <stop offset="53%" stop-color="#cba6f7"/>
+      <stop offset="100%" stop-color="#b4befe"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="10" width="112" height="110" rx="28" fill="#181825"/>
+  <rect x="8.5" y="8.5" width="111" height="108" rx="27.5" fill="url(#face)"
+        stroke="#585b70" stroke-opacity=".8"/>
+  <path fill="url(#moon)" d="M63 28
+    C51.5 36.3 46.3 47.5 47 59.2
+    C48 75.2 60.6 87.6 77.6 87.6
+    C85.9 87.6 92.2 85.3 98.7 81.1
+    C92.1 93.4 80.4 100.6 65.8 100.6
+    C45.8 100.6 29.4 84.8 29.4 64.7
+    C29.4 46.2 43.3 30 63 28Z"/>
+  <rect x="72" y="32" width="8" height="32" rx="4" fill="#cdd6f4"/>
+</svg>
