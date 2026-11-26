@@ -23,6 +23,9 @@ TABLES = {"english": "table_translator@melt_eng", "mixed": "table_translator@cn_
           "terms": "table_translator@local_terms"}
 SCALAR = {"hints": "lune/spelling_hints", "count": "menu/page_size",
           "quality": "melt_eng/initial_quality"}
+ARROW_BINDINGS = {"Left": "previous_candidate", "Right": "next_candidate",
+                  "KP_Left": "previous_candidate", "KP_Right": "next_candidate"}
+SELECTOR = "selector/linear/bindings/"
 
 
 def read_yaml(path):
@@ -87,6 +90,7 @@ class Settings:
         self.values = {
             "raw": enabled(rime.get("LuneRawOnShift", False)),
             "hints": enabled(active(SCALAR["hints"], patch, schema, False)),
+            "candidate_arrows": active(SELECTOR + "Right", patch, schema, "next_candidate") == "next_candidate",
             "count": int(active(SCALAR["count"], patch, schema, 9)),
             "quality": float(active(SCALAR["quality"], patch, schema, -1.2)),
             "apostrophe": active("speller/delimiter", patch, schema, "' ").startswith("'"),
@@ -109,6 +113,9 @@ class Settings:
             schema = self.schema
             for name in changes & SCALAR.keys():
                 patch[SCALAR[name]] = updates[name]
+            if "candidate_arrows" in changes:
+                for key, action in ARROW_BINDINGS.items():
+                    patch[SELECTOR + key] = action if updates["candidate_arrows"] else "noop"
             if "apostrophe" in changes:
                 patch["speller/delimiter"] = "' " if updates["apostrophe"] else " '"
             if "fuzzy" in changes:
@@ -160,6 +167,8 @@ class Window(Gtk.ApplicationWindow):
         body.pack_end(self.status, False, False, 0)
 
         self.page("输入")
+        self.toggle("candidate_arrows", "左右方向键选词",
+                    "默认逐字母移动拼音光标。开启后，在拼音末尾按 → 选下一个候选，← 选回上一个。")
         native_tip = "" if settings.integration else "（需启用 Lune 输入集成）"
         self.toggle("raw", "Shift 切换时保留原文", "输入 hello 后轻按左或右 Shift，直接上屏 hello。" + native_tip,
                     settings.integration)

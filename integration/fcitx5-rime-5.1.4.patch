@@ -1,16 +1,17 @@
 diff --git a/src/rimeengine.cpp b/src/rimeengine.cpp
-index e9e9d8d..7053807 100644
+index e9e9d8d..c00111c 100644
 --- a/src/rimeengine.cpp
 +++ b/src/rimeengine.cpp
-@@ -5,6 +5,7 @@
+@@ -5,6 +5,8 @@
   */
 
  #include "rimeengine.h"
++#include "caret.h"
 +#include "spelling.h"
  #include "notifications_public.h"
  #include "rimestate.h"
  #include <cstdint>
-@@ -335,8 +336,45 @@ RimeEngine::RimeEngine(Instance *instance)
+@@ -335,8 +337,45 @@ RimeEngine::RimeEngine(Instance *instance)
      instance_->userInterfaceManager().registerAction("fcitx-rime-sync",
                                                       &syncAction_);
      schemaMenu_.addAction(&separatorAction_);
@@ -56,15 +57,16 @@ index e9e9d8d..7053807 100644
      globalConfigReloadHandle_ = instance_->watchEvent(
          EventType::GlobalConfigReloaded, EventWatcherPhase::Default,
          [this](Event &) { refreshSessionPoolPolicy(); });
-@@ -420,6 +458,7 @@ void RimeEngine::rimeStart(bool fullcheck) {
+@@ -420,6 +459,8 @@ void RimeEngine::rimeStart(bool fullcheck) {
          firstRun_ = false;
      }
      api_->initialize(&fcitx_rime_traits);
++    registerLuneCaretBoundary();
 +    registerLuneSpelling();
      api_->set_notification_handler(&rimeNotificationHandler, this);
      api_->start_maintenance(fullcheck);
 
-@@ -588,11 +627,16 @@ void RimeEngine::activate(const InputMethodEntry &, InputContextEvent &event) {
+@@ -588,11 +629,16 @@ void RimeEngine::activate(const InputMethodEntry &, InputContextEvent &event) {
 
  void RimeEngine::deactivate(const InputMethodEntry &entry,
                              InputContextEvent &event) {

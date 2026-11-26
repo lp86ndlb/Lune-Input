@@ -50,8 +50,10 @@ def install():
 
     schema_name = "luna_pinyin_simp.schema.yaml"
     schema_path = fcitx / "rime" / schema_name
+    include("rime", "lune_navigation.yaml", schema_path.parent)
     original = schema_path if schema_path.exists() else Path("/usr/share/rime-data") / schema_name
     schema = original.read_text()
+    navigation = "lune_navigation:/patch?"
     layers = ["lune_integration:/patch?", "lune_preferences:/patch?"]
     # Patch the complete schema so Ubuntu's translators and processors are preserved.
     if re.search(r"^__patch:", schema, re.MULTILINE):
@@ -59,13 +61,15 @@ def install():
         document = yaml.safe_load(schema)
         existing = document["__patch"]
         steps = list(existing) if isinstance(existing, list) else [existing]
-        missing = [ref for ref in layers if ref not in steps]
-        if missing:
-            document["__patch"] = steps + missing
+        updated = steps + [ref for ref in layers if ref not in steps]
+        if navigation not in updated:
+            updated.insert(0, navigation)  # User overrides follow the defaults.
+        if updated != steps:
+            document["__patch"] = updated
             schema = yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
     else:
         schema = schema.rstrip() + "\n\n__patch:\n" + "".join(
-            f"  - {ref}\n" for ref in ["luna_pinyin_simp.custom:/patch?", *layers])
+            f"  - {ref}\n" for ref in [navigation, "luna_pinyin_simp.custom:/patch?", *layers])
     files[schema_path] = schema.encode()
     settings = fcitx / "lune/settings.py"
     files[settings] = ROOT / "scripts/lune-settings"

@@ -1,5 +1,7 @@
-"""Candidate order, selection and Shift regression checks. Run via tests/check-input."""
+"""Input, navigation and selection checks. Run via tests/check-input."""
 import os
+from pathlib import Path
+import runpy
 import time
 
 import dbus
@@ -24,8 +26,12 @@ def check():
     path, _ = im.CreateInputContext([("program", "lune-test"), ("display", "x11:" + os.environ["DISPLAY"])])
     ctx = interface(path, "InputContext1")
     candidates = []
+    preedit_text, caret, highlighted = "", -1, -1
 
     def receive(preedit, cursor, aux, down, words, selected, layout, prev, nxt):
+        nonlocal preedit_text, caret, highlighted
+        preedit_text = "".join(str(text) for text, _ in preedit)
+        caret, highlighted = int(cursor), int(selected)
         candidates[:] = [str(word) for _, word in words]
 
     ctx.connect_to_signal("UpdateClientSideUI", receive)
@@ -54,6 +60,65 @@ def check():
             key(ord(char))
         return panel()
 
+    def test_arrows():
+        left, right = 0xff51, 0xff53
+        assert type_word("shang") and caret == 5
+        for arrow, offset in [(right, 5), (left, 4), (right, 5)]:
+            key(arrow)
+            assert panel() and (caret, highlighted) == (offset, 0)
+        for offset in (4, 3, 2, 1, 0, 0):
+            key(left)
+            assert panel() and caret == offset
+        key(right)
+        assert panel() and caret == 1
+
+        type_word("shurfa")
+        key(left)
+        key(left)
+        key(ord("u"))
+        key(0xff57)  # End
+        assert panel()[0] == "输入法" and preedit_text == "shu'ru'fa"
+
+        # The installed GTK switch must survive reopening and change real key events.
+        settings_path = Path(os.environ["XDG_DATA_HOME"]) / "fcitx5/lune/settings.py"
+        ui = runpy.run_path(str(settings_path), run_name="lune_test_settings")
+        app = ui["Gtk"].Application(application_id="io.github.lp86ndlb.LuneInput.KeyTest")
+        assert app.register(None)
+        for enabled in (True, False):
+            key(0xff1b)
+            window = ui["Window"](app, ui["Settings"]())
+            switch = window.controls["candidate_arrows"]
+            assert switch.get_active() != enabled
+            switch.set_active(enabled)
+            window.apply_button.clicked()
+            assert not window.changes(), window.status.get_text()
+            window.destroy()
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                type_word("shang")
+                key(right)
+                if panel() and (caret, highlighted) == (5, int(enabled)):
+                    break
+                time.sleep(.1)
+            else:
+                raise AssertionError((enabled, caret, highlighted, candidates))
+            assert ui["Settings"]().values["candidate_arrows"] == enabled
+            if enabled:
+                key(left)
+                assert panel() and (caret, highlighted) == (5, 0)
+                key(left)
+                assert panel() and caret == 4
+                key(right)
+                assert panel() and (caret, highlighted) == (5, 0)
+                words = type_word("shang")
+                key(right)
+                assert key(32) == [words[1]]
+        key(0xff1b)
+        for arrow in (left, right):
+            _, handled = ctx.ProcessKeyEventBatch(arrow, 0, 0, False, 0)
+            ctx.ProcessKeyEventBatch(arrow, 0, 0, True, 0)
+            assert not handled
+
     try:
         deadline = time.monotonic() + 30
         while not type_word("w"):
@@ -61,6 +126,7 @@ def check():
             time.sleep(.12)
         assert type_word("key")[0] == "可以"
         assert len(type_word("shi")) == 9
+        test_arrows()
         repairs = {
             "hsang": "shang", "shnag": "shang",
             "qiing": "qing", "qiiing": "qing", "qiingwen": "qingwen",
@@ -87,7 +153,7 @@ def check():
             assert key(shift, code) == ["hello"]
             assert controller.CurrentInputMethod() == "keyboard-cn"
             assert key(shift, code) == [] and controller.CurrentInputMethod() == "rime"
-        print("Shift 原文、纠错候选、点选及中文排序通过。")
+        print("拼音光标、方向键选词开关、Shift 原文、纠错、点选及中文排序通过。")
     finally:
         ctx.FocusOut()
         ctx.DestroyIC()

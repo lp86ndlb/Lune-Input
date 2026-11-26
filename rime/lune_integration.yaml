@@ -1,4 +1,5 @@
 patch:
+  engine/processors/@before 0: lune_caret_boundary
   engine/filters/+:
     - lune_spelling
   lune/spelling_hints: true

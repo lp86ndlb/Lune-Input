@@ -110,7 +110,7 @@ def main():
 
         with ThreadPoolExecutor(max_workers=min(3, os.cpu_count() or 1)) as pool:
             objects = list(pool.map(compile_file, [*sorted((source / "src").glob("*.cpp")),
-                                                   ROOT / "integration/spelling.cpp"]))
+                                                   ROOT / "integration/spelling.cpp", ROOT / "integration/caret.cpp"]))
         enhanced = work / "librime-lune.so"
         subprocess.run(["g++", "-shared", "-Wl,-z,defs", "-o", enhanced, *objects,
                         "-l:libFcitx5Core.so.7", "-l:libFcitx5Config.so.6", "-l:libFcitx5Utils.so.2",

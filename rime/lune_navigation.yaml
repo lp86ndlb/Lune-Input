@@ -1,0 +1,6 @@
+patch:
+  navigator/bindings/Left: left_by_char
+  selector/linear/bindings/Left: noop
+  selector/linear/bindings/Right: noop
+  selector/linear/bindings/KP_Left: noop
+  selector/linear/bindings/KP_Right: noop
