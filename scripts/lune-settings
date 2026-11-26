@@ -162,7 +162,7 @@ class Window(Gtk.ApplicationWindow):
         native_tip = "" if settings.integration else "（需启用 Lune 输入集成）"
         self.toggle("raw", "Shift 切换时保留原文", "输入 hello 后轻按左或右 Shift，直接上屏 hello。" + native_tip,
                     settings.integration)
-        self.toggle("hints", "第二候选提示拼音纠错", "如 hsang → shang，按 2 改回拼音，再选字。每页至少两项。" + native_tip,
+        self.toggle("hints", "第二候选提示拼音纠错", "如 qiing → qing、hsang → shang。按 2 改拼音，再选字。每页至少两项。" + native_tip,
                     settings.integration)
         self.toggle("fuzzy", "前后鼻音模糊匹配", "匹配 en / eng、in / ing，保留 an / ang 的区别。")
         self.toggle("apostrophe", "用单引号分隔音节", "开启时显示 shu'ru'fa，关闭时使用空格。")

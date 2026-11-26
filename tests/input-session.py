@@ -61,17 +61,27 @@ def check():
             time.sleep(.12)
         assert type_word("key")[0] == "可以"
         assert len(type_word("shi")) == 9
-        for typo in ("hsang", "shnag"):
+        repairs = {
+            "hsang": "shang", "shnag": "shang",
+            "qiing": "qing", "qiiing": "qing", "qiingwen": "qingwen",
+            "qiing'wen": "qing'wen", "jinnnian": "jinnian",
+            "zhongguorenmiinyinhang": "zhongguorenminyinhang",
+        }
+        assert "请" in type_word("qing") and "请问" in type_word("qingwen")
+        for typo, corrected in repairs.items():
             for mouse in (False, True):
+                expected = type_word(corrected)
                 words = type_word(typo)
-                assert words[1].replace(" ", "") == "shang〔纠错〕", words
+                assert words[1].replace(" ", "") == corrected + "〔纠错〕", (typo, words)
                 if mouse:
                     ctx.SelectCandidate(1)
                 else:
                     assert key(ord("2")) == []
-                assert panel()[0] == "上"
-                assert key(32) == ["上"]
-        assert all("纠错" not in word for word in type_word("shang"))
+                assert panel() == expected, (typo, corrected, panel())
+                assert key(32) == [expected[0]]
+        for unchanged in ("shang", "qing", "jinnian", "zhongguo", "mama", "naan",
+                          "hello", "bidding", "qqqun", "linuxxitong", "qiingweenn"):
+            assert all("纠错" not in word for word in type_word(unchanged)), unchanged
         for shift, code in ((0xffe1, 50), (0xffe2, 62)):
             assert type_word("hello")
             assert key(shift, code) == ["hello"]

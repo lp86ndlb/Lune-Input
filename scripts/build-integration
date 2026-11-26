@@ -28,6 +28,7 @@ def rows(path):
 def write_spellings(path):
     syllables = {r[1] for r in rows(Path("/usr/share/rime-data/luna_pinyin.dict.yaml"))
                  if re.fullmatch("[a-z]+", r[1])}
+    longest = max(map(len, syllables))
     english = {r[1].casefold() for f in (ROOT / "rime/en_dicts").glob("*.dict.yaml")
                for r in rows(f)}
     swaps = defaultdict(set)
@@ -40,15 +41,35 @@ def write_spellings(path):
 
     def valid_pinyin(word):
         ends = {0}
-        for end in range(1, len(word) + 1):
-            if any(word[start:end] in syllables for start in ends):
-                ends.add(end)
+        for start in range(len(word)):
+            if start in ends:
+                ends.update(end for end in range(start + 1, min(start + longest, len(word)) + 1)
+                            if word[start:end] in syllables)
         return len(word) in ends
 
+    codes = english.union(r[1].casefold() for f in ("en_dicts/cn_en.txt", "local_it.dict.yaml")
+                          for r in rows(ROOT / "rime" / f))
+
+    def needs_protection(code):
+        # Only ship dictionary entries that could otherwise look like a repeat error.
+        if not re.fullmatch("[a-z]+", code):
+            return False
+        return any(valid_pinyin(code[:cut] + code[run.end():])
+                   for run in re.finditer(r"([a-z])\1+", code)
+                   for cut in range(run.start() + 1, run.end())) and not valid_pinyin(code)
+
     with path.open("w") as out:
+        print(f"constexpr size_t maxSyllableLength = {longest};", file=out)
+        for name, values in (("syllables", syllables), ("protectedCodes", filter(needs_protection, codes))):
+            print(f"constexpr std::string_view {name}[] = {{", file=out)
+            for value in sorted(values):
+                print(f'    "{value}",', file=out)
+            print("};", file=out)
+        print("constexpr Spelling transpositions[] = {", file=out)
         for typo, corrections in sorted(swaps.items()):
             if len(corrections) == 1 and typo not in english and not valid_pinyin(typo):
-                print(f'{{"{typo}", "{next(iter(corrections))}"}},', file=out)
+                print(f'    {{"{typo}", "{next(iter(corrections))}"}},', file=out)
+        print("};", file=out)
 
 
 def main():
@@ -72,7 +93,7 @@ def main():
         source = work / "fcitx5-rime-5.1.4"
         subprocess.run(["patch", "--batch", "--fuzz=0", "-p1", "-d", source, "-i",
                         ROOT / "integration/fcitx5-rime-5.1.4.patch"], check=True)
-        write_spellings(work / "transpositions.inc")
+        write_spellings(work / "spellings.inc")
         headers = Path(os.environ.get("LUNE_INCLUDE_ROOT", "/usr/include"))
         includes = [ROOT / "integration", work, headers,
                     *[p for p in (headers / "Fcitx5").glob("*") if p.is_dir()],
