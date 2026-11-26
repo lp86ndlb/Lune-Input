@@ -1,0 +1,4 @@
+patch:
+  engine/filters/+:
+    - lune_spelling
+  lune/spelling_hints: true

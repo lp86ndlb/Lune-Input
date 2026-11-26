@@ -1,0 +1,193 @@
+diff --git a/src/rimeengine.cpp b/src/rimeengine.cpp
+index e9e9d8d..7053807 100644
+--- a/src/rimeengine.cpp
++++ b/src/rimeengine.cpp
+@@ -5,6 +5,7 @@
+  */
+
+ #include "rimeengine.h"
++#include "spelling.h"
+ #include "notifications_public.h"
+ #include "rimestate.h"
+ #include <cstdint>
+@@ -335,8 +336,45 @@ RimeEngine::RimeEngine(Instance *instance)
+     instance_->userInterfaceManager().registerAction("fcitx-rime-sync",
+                                                      &syncAction_);
+     schemaMenu_.addAction(&separatorAction_);
++    settingsGroup_.setShortText("Lune Input");
++    settingsGroup_.setIcon("preferences-desktop-keyboard");
++    settingsGroup_.setMenu(&settingsMenu_);
++    settingsAction_.setShortText("配置…");
++    settingsAction_.setIcon("preferences-desktop-keyboard");
++    settingsAction_.connect<SimpleAction::Activated>([](InputContext *) {
++        auto script = StandardPath::global().locate(StandardPath::Type::PkgData,
++                                                     "lune/settings.py");
++        if (!script.empty()) {
++            startProcess({"/usr/bin/python3", script});
++        }
++    });
++    instance_->userInterfaceManager().registerAction("lune-settings", &settingsAction_);
++    instance_->userInterfaceManager().registerAction("lune-menu", &settingsGroup_);
++    settingsMenu_.addAction(&settingsAction_);
++    // Keep the same tray entry when Shift switches to the keyboard input method.
++    auto addMenu = [this](InputContext *ic) {
++        ic->statusArea().addAction(StatusGroup::AfterInputMethod, &settingsGroup_);
++        return true;
++    };
++    instance_->inputContextManager().foreach(addMenu);
++    menuWatcher_ = instance_->watchEvent(
++        EventType::InputContextCreated, EventWatcherPhase::Default,
++        [addMenu](Event &event) {
++            addMenu(static_cast<InputContextEvent &>(event).inputContext());
++        });
+     schemaMenu_.addAction(&deployAction_);
+     schemaMenu_.addAction(&syncAction_);
++    shiftWatcher_ = instance_->watchEvent(
++        EventType::InputContextKeyEvent, EventWatcherPhase::PreInputMethod,
++        [this](Event &event) {
++            auto &key = static_cast<KeyEvent &>(event);
++            const auto sym = key.origKey().sym();
++            releasedShift_.unwatch();
++            if (key.isRelease() && (sym == FcitxKey_Shift_L || sym == FcitxKey_Shift_R) &&
++                !key.origKey().states().unset(KeyState::Shift).testAny(KeyState::SimpleMask)) {
++                releasedShift_ = key.inputContext()->watch();
++            }
++        });
+     globalConfigReloadHandle_ = instance_->watchEvent(
+         EventType::GlobalConfigReloaded, EventWatcherPhase::Default,
+         [this](Event &) { refreshSessionPoolPolicy(); });
+@@ -420,6 +458,7 @@ void RimeEngine::rimeStart(bool fullcheck) {
+         firstRun_ = false;
+     }
+     api_->initialize(&fcitx_rime_traits);
++    registerLuneSpelling();
+     api_->set_notification_handler(&rimeNotificationHandler, this);
+     api_->start_maintenance(fullcheck);
+
+@@ -588,11 +627,16 @@ void RimeEngine::activate(const InputMethodEntry &, InputContextEvent &event) {
+
+ void RimeEngine::deactivate(const InputMethodEntry &entry,
+                             InputContextEvent &event) {
+-    if (event.type() == EventType::InputContextSwitchInputMethod &&
+-        *config_.commitWhenDeactivate) {
++    if (event.type() == EventType::InputContextSwitchInputMethod) {
+         auto inputContext = event.inputContext();
+         auto state = inputContext->propertyFor(&factory_);
+-        state->commitPreedit(inputContext);
++        const auto reason = static_cast<InputContextSwitchInputMethodEvent &>(event).reason();
++        const bool raw = *config_.shiftRaw && releasedShift_.get() == inputContext &&
++                         (reason == InputMethodSwitchedReason::Trigger ||
++                          reason == InputMethodSwitchedReason::Enumerate);
++        if (raw || *config_.commitWhenDeactivate) {
++            state->commitPreedit(inputContext, raw);
++        }
+     }
+     reset(entry, event);
+ }
+diff --git a/src/rimeengine.h b/src/rimeengine.h
+index 818471d..f186a04 100644
+--- a/src/rimeengine.h
++++ b/src/rimeengine.h
+@@ -59,6 +59,7 @@ FCITX_CONFIGURATION(
+     Option<bool> preeditCursorPositionAtBeginning{
+         this, "PreeditCursorPositionAtBeginning",
+         _("Fix embedded preedit cursor at the beginning of the preedit"), !isAndroid()};
++    Option<bool> shiftRaw{this, "LuneRawOnShift", _("Shift 切换时保留原文"), true};
+     Option<bool> commitWhenDeactivate{
+         this, "Commit when deactivate",
+         _("Commit current text when deactivating"), true};
+@@ -109,7 +110,10 @@ public:
+     void setConfig(const RawConfig &config) override {
+         config_.load(config, true);
+         safeSaveAsIni(config_, "conf/rime.conf");
+-        updateConfig();
++        // This switch is read at key time and needs no engine restart.
++        if (!config.get("LuneRawOnShift") || config.subItems().size() != 1) {
++            updateConfig();
++        }
+     }
+     void setSubConfig(const std::string &path, const RawConfig &) override;
+     void updateConfig();
+@@ -172,6 +176,12 @@ private:
+     SimpleAction separatorAction_;
+     SimpleAction deployAction_;
+     SimpleAction syncAction_;
++    Menu settingsMenu_;
++    SimpleAction settingsGroup_;
++    SimpleAction settingsAction_;
++    std::unique_ptr<HandlerTableEntry<EventHandler>> menuWatcher_;
++    TrackableObjectReference<InputContext> releasedShift_;
++    std::unique_ptr<HandlerTableEntry<EventHandler>> shiftWatcher_;
+
+     RimeEngineConfig config_;
+     std::unordered_map<std::string, std::unordered_map<std::string, bool>>
+diff --git a/src/rimestate.cpp b/src/rimestate.cpp
+index 0ad2730..31c768d 100644
+--- a/src/rimestate.cpp
++++ b/src/rimestate.cpp
+@@ -5,6 +5,7 @@
+  */
+
+ #include "rimestate.h"
++#include "spelling.h"
+ #include "rimecandidate.h"
+ #include "rimeengine.h"
+ #include <fcitx-utils/stringutils.h>
+@@ -138,7 +139,9 @@ void RimeState::keyEvent(KeyEvent &event) {
+     auto ic = event.inputContext();
+     RIME_STRUCT(RimeCommit, commit);
+     if (api->get_commit(session, &commit)) {
+-        ic->commitString(commit.text);
++        if (!applyLuneSpelling(api, session, commit.text)) {
++            ic->commitString(commit.text);
++        }
+         api->free_commit(&commit);
+     }
+
+@@ -167,7 +170,9 @@ void RimeState::selectCandidate(InputContext *inputContext, int idx,
+     }
+     RIME_STRUCT(RimeCommit, commit);
+     if (api->get_commit(session, &commit)) {
+-        inputContext->commitString(commit.text);
++        if (!applyLuneSpelling(api, session, commit.text)) {
++            inputContext->commitString(commit.text);
++        }
+         api->free_commit(&commit);
+     }
+     updateUI(inputContext, false);
+@@ -329,15 +334,19 @@ void RimeState::updateUI(InputContext *ic, bool keyRelease) {
+
+ void RimeState::release() { session_.reset(); }
+
+-void RimeState::commitPreedit(InputContext *ic) {
++void RimeState::commitPreedit(InputContext *ic, bool raw) {
+     if (auto api = engine_->api()) {
+         RIME_STRUCT(RimeContext, context);
+         auto session = this->session();
+         if (!api->get_context(session, &context)) {
+             return;
+         }
+-        if (context.commit_text_preview) {
+-            ic->commitString(context.commit_text_preview);
++        const char *text = context.commit_text_preview;
++        if (raw && context.composition.length && !context.composition.sel_start) {
++            text = api->get_input(session);
++        }
++        if (text && *text) {
++            ic->commitString(text);
+         }
+         api->free_context(&context);
+     }
+diff --git a/src/rimestate.h b/src/rimestate.h
+index b711d59..a32a0b5 100644
+--- a/src/rimestate.h
++++ b/src/rimestate.h
+@@ -34,7 +34,7 @@ public:
+     void updatePreedit(InputContext *ic, const RimeContext &context);
+     void updateUI(InputContext *ic, bool keyRelease);
+     void release();
+-    void commitPreedit(InputContext *ic);
++    void commitPreedit(InputContext *ic, bool raw);
+     std::string subMode();
+     std::string subModeLabel();
+     void setLatinMode(bool latin);

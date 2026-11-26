@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Build the Lune integration for the Ubuntu 24.04 Fcitx5 Rime frontend."""
+import argparse
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+from tempfile import TemporaryDirectory
+from urllib.request import urlopen
+
+ROOT = Path(__file__).resolve().parents[1]
+VENDOR = Path("/usr/lib/x86_64-linux-gnu/fcitx5/librime.so")
+VENDOR_SHA = "b0efed6bef6b891c4a2b6f83b4769be19f73b7372b210ddcbbb54604a1683200"
+URL = "https://archive.ubuntu.com/ubuntu/pool/universe/f/fcitx5-rime/fcitx5-rime_5.1.4.orig.tar.xz"
+ARCHIVE_SHA = "b5b08859e9c7e5bac951522c98e8b0fc4fee217016c0ad726a780856591e380b"
+
+
+def rows(path):
+    for line in path.read_text().splitlines():
+        if not line.startswith("#") and "\t" in line:
+            yield line.split("\t")
+
+
+def write_spellings(path):
+    syllables = {r[1] for r in rows(Path("/usr/share/rime-data/luna_pinyin.dict.yaml"))
+                 if re.fullmatch("[a-z]+", r[1])}
+    english = {r[1].casefold() for f in (ROOT / "rime/en_dicts").glob("*.dict.yaml")
+               for r in rows(f)}
+    swaps = defaultdict(set)
+    for syllable in syllables:
+        if len(syllable) < 3:
+            continue
+        for i in range(1, len(syllable)):
+            typo = syllable[:i-1] + syllable[i] + syllable[i-1] + syllable[i+1:]
+            swaps[typo].add(syllable)
+
+    def valid_pinyin(word):
+        ends = {0}
+        for end in range(1, len(word) + 1):
+            if any(word[start:end] in syllables for start in ends):
+                ends.add(end)
+        return len(word) in ends
+
+    with path.open("w") as out:
+        for typo, corrections in sorted(swaps.items()):
+            if len(corrections) == 1 and typo not in english and not valid_pinyin(typo):
+                print(f'{{"{typo}", "{next(iter(corrections))}"}},', file=out)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--archive", type=Path, help="use a local verified upstream tarball")
+    args = parser.parse_args()
+    if not VENDOR.is_file() or sha256(VENDOR.read_bytes()).hexdigest() != VENDOR_SHA:
+        parser.exit(1, "此集成适配 Ubuntu 24.04 amd64 的 fcitx5-rime 5.1.4-2build2。\n")
+    output = ROOT / "build"
+    output.mkdir(exist_ok=True)
+    with TemporaryDirectory(dir=output) as folder:
+        work = Path(folder)
+        archive = args.archive
+        if archive is None:
+            archive = work / "source.tar.xz"
+            with urlopen(URL, timeout=60) as response:
+                archive.write_bytes(response.read())
+        if sha256(archive.read_bytes()).hexdigest() != ARCHIVE_SHA:
+            parser.exit(1, "fcitx5-rime 源码校验失败。\n")
+        subprocess.run(["tar", "-xf", archive, "-C", work], check=True)
+        source = work / "fcitx5-rime-5.1.4"
+        subprocess.run(["patch", "--batch", "--fuzz=0", "-p1", "-d", source, "-i",
+                        ROOT / "integration/fcitx5-rime-5.1.4.patch"], check=True)
+        write_spellings(work / "transpositions.inc")
+        headers = Path(os.environ.get("LUNE_INCLUDE_ROOT", "/usr/include"))
+        includes = [ROOT / "integration", work, headers,
+                    *[p for p in (headers / "Fcitx5").glob("*") if p.is_dir()],
+                    *[p for p in (headers / "Fcitx5/Module/fcitx-module").glob("*") if p.is_dir()]]
+        flags = ["-std=c++17", "-O2", "-fPIC", "-fvisibility=hidden", "-pthread",
+                 '-DRIME_DATA_DIR="/usr/share/rime-data"', '-DFCITX_RIME_VERSION="5.1.4"',
+                 '-DFCITX_GETTEXT_DOMAIN="fcitx5-rime"', '-DFCITX_INSTALL_LOCALEDIR="/usr/share/locale"',
+                 *[f"-I{p}" for p in includes]]
+
+        def compile_file(src):
+            obj = work / (src.stem + ".o")
+            subprocess.run(["g++", *flags, "-c", src, "-o", obj], check=True)
+            return obj
+
+        with ThreadPoolExecutor(max_workers=min(3, os.cpu_count() or 1)) as pool:
+            objects = list(pool.map(compile_file, [*sorted((source / "src").glob("*.cpp")),
+                                                   ROOT / "integration/spelling.cpp"]))
+        enhanced = work / "librime-lune.so"
+        subprocess.run(["g++", "-shared", "-Wl,-z,defs", "-o", enhanced, *objects,
+                        "-l:libFcitx5Core.so.7", "-l:libFcitx5Config.so.6", "-l:libFcitx5Utils.so.2",
+                        "-l:libglog.so.1", "-l:librime.so.1", "-lfmt"], check=True)
+        selector = work / "librime-select.so"
+        glib = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "glib-2.0"], text=True))
+        subprocess.run(["cc", "-shared", "-fPIC", f'-DVENDOR_PATH="{VENDOR}"',
+                        f'-DVENDOR_DIGEST="{VENDOR_SHA}"', '-DVARIANT_FILE="librime-lune.so"',
+                        ROOT / "renderer/select.c", "-o", selector, *glib, "-ldl"], check=True)
+        for library in (enhanced, selector):
+            library.replace(output / library.name)
+    print(f"输入集成构建成功，文件位于 {output}")
+
+
+if __name__ == "__main__":
+    main()

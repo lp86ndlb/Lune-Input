@@ -13,6 +13,7 @@ installation.yaml
 user.yaml
 user.dict
 user.history
+lune_preferences.yaml
 cached_layouts
 .it-dict-*
 *.log

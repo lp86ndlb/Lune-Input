@@ -18,6 +18,10 @@ STATE = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state")
 def install():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--with-renderer", action="store_true", help="also install the built X11 renderer")
+    parser.add_argument("--with-integration", action="store_true",
+                        help="also install the Lune input features and tray submenu")
+    parser.add_argument("--upgrade-integration", action="store_true",
+                        help="add or update the integration on an existing Lune installation")
     args = parser.parse_args()
     fcitx = DATA / "fcitx5"
     files = {}
@@ -26,20 +30,60 @@ def install():
         for name in names.split():
             files[target / name] = ROOT / folder / name
 
-    include("fcitx5", "config profile", CONFIG / "fcitx5")
-    include("fcitx5/conf", "classicui.conf rime.conf pinyin.conf chttrans.conf punctuation.conf notifications.conf",
-            CONFIG / "fcitx5/conf")
-    include("rime", "default.custom.yaml luna_pinyin_simp.custom.yaml local_terms.schema.yaml "
-            "local_terms.dict.yaml local_it.dict.yaml local_long.dict.yaml local_symbols.yaml essay.txt "
-            "melt_eng.schema.yaml melt_eng.dict.yaml", fcitx / "rime")
-    include("rime/en_dicts", "en.dict.yaml en_ext.dict.yaml cn_en.txt", fcitx / "rime/en_dicts")
-    theme = "themes/catppuccin-mocha-mauve"
-    include(theme, "theme.conf highlight.svg panel.svg arrow.png radio.png", fcitx / theme)
-    include("inputmethod", "rime.conf", fcitx / "inputmethod")
-    include("icons", "fcitx-rime.svg fcitx-rime-rounded-white.svg org.fcitx.Fcitx5.fcitx-rime.svg",
-            DATA / "icons/Yaru-magenta/24x24/apps")
-    include("icons", "fcitx-rime-rounded-white.svg", DATA / "icons/hicolor/scalable/apps")
-    include("scripts", "update-rime-it-dict", HOME / ".local/bin")
+    if not args.upgrade_integration:
+        include("fcitx5", "config profile", CONFIG / "fcitx5")
+        include("fcitx5/conf", "classicui.conf rime.conf pinyin.conf chttrans.conf punctuation.conf notifications.conf",
+                CONFIG / "fcitx5/conf")
+        include("rime", "default.custom.yaml luna_pinyin_simp.custom.yaml local_terms.schema.yaml "
+                "local_terms.dict.yaml local_it.dict.yaml local_long.dict.yaml local_symbols.yaml essay.txt "
+                "melt_eng.schema.yaml melt_eng.dict.yaml", fcitx / "rime")
+        include("rime/en_dicts", "en.dict.yaml en_ext.dict.yaml cn_en.txt", fcitx / "rime/en_dicts")
+        theme = "themes/catppuccin-mocha-mauve"
+        include(theme, "theme.conf highlight.svg panel.svg arrow.png radio.png", fcitx / theme)
+        include("inputmethod", "rime.conf", fcitx / "inputmethod")
+        include("icons", "fcitx-rime.svg fcitx-rime-rounded-white.svg org.fcitx.Fcitx5.fcitx-rime.svg",
+                DATA / "icons/Yaru-magenta/24x24/apps")
+        include("icons", "fcitx-rime-rounded-white.svg", DATA / "icons/hicolor/scalable/apps")
+        include("scripts", "update-rime-it-dict", HOME / ".local/bin")
+
+    schema_name = "luna_pinyin_simp.schema.yaml"
+    schema_path = fcitx / "rime" / schema_name
+    original = schema_path if schema_path.exists() else Path("/usr/share/rime-data") / schema_name
+    schema = original.read_text()
+    layers = ["lune_integration:/patch?", "lune_preferences:/patch?"]
+    # Patch the complete schema so Ubuntu's translators and processors are preserved.
+    if re.search(r"^__patch:", schema, re.MULTILINE):
+        import yaml
+        document = yaml.safe_load(schema)
+        existing = document["__patch"]
+        steps = list(existing) if isinstance(existing, list) else [existing]
+        missing = [ref for ref in layers if ref not in steps]
+        if missing:
+            document["__patch"] = steps + missing
+            schema = yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
+    else:
+        schema = schema.rstrip() + "\n\n__patch:\n" + "".join(
+            f"  - {ref}\n" for ref in ["luna_pinyin_simp.custom:/patch?", *layers])
+    files[schema_path] = schema.encode()
+    settings = fcitx / "lune/settings.py"
+    files[settings] = ROOT / "scripts/lune-settings"
+    escaped = re.sub(r'(["`$\\])', r'\\\1', str(settings)).replace("%", "%%")
+    command = escaped.replace("\\", "\\\\")
+    files[DATA / "applications/io.github.lp86ndlb.LuneInput.Settings.desktop"] = (
+        "[Desktop Entry]\nType=Application\nName=Lune Input Settings\nName[zh_CN]=Lune 输入法设置\n"
+        f'Exec=/usr/bin/python3 "{command}"\nIcon=fcitx-rime-rounded-white\n'
+        "Categories=Settings;\nKeywords=Lune;Rime;Fcitx;拼音;输入法;\n"
+    ).encode()
+    if args.with_integration or args.upgrade_integration:
+        library = HOME / ".local/lib/fcitx5/lune"
+        include("build", "librime-lune.so librime-select.so", library)
+        include("rime", "lune_integration.yaml", fcitx / "rime")
+        vendor = Path("/usr/share/fcitx5/addon/rime.conf").read_text()
+        entry, count = re.subn(r"^Library=export:librime$", lambda _: f"Library=export:{library}/librime-select",
+                               vendor, flags=re.MULTILINE)
+        if count != 1:
+            parser.exit(1, "无法识别系统 Rime 插件描述。\n")
+        files[fcitx / "addon/rime.conf"] = entry.encode()
     if args.with_renderer:
         library = HOME / ".local/lib/fcitx5/candidate-width"
         include("build", "libclassicui-motion.so libclassicui-select.so", library)
@@ -51,7 +95,7 @@ def install():
         files[fcitx / "addon/classicui.conf"] = entry.encode()
     for src in files.values():
         if isinstance(src, Path) and not src.is_file():
-            parser.exit(1, f"找不到 {src}。动画组件请先运行 scripts/build-renderer。\n")
+            parser.exit(1, f"找不到 {src}。输入集成请先运行 scripts/build-integration，动画组件请先运行 scripts/build-renderer。\n")
 
     backup = STATE / "lune-input/backups" / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     for dest, src in files.items():

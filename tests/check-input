@@ -1,0 +1,21 @@
+#!/bin/sh
+# Run the real frontend on a separate display and bus, with an empty learning database.
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+fixture=$(mktemp -d)
+trap 'rm -rf "$fixture"' EXIT
+export HOME="$fixture" XDG_CONFIG_HOME="$fixture/config" XDG_DATA_HOME="$fixture/data"
+export XDG_STATE_HOME="$fixture/state" XDG_CACHE_HOME="$fixture/cache" XDG_RUNTIME_DIR="$fixture/run"
+export XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=GNOME XDG_DATA_DIRS=/usr/local/share:/usr/share
+export FCITX_X11_USE_CLIENT_SIDE_UI=1
+unset DBUS_SESSION_BUS_ADDRESS WAYLAND_DISPLAY IBUS_ADDRESS FCITX_CONFIG_HOME FCITX_DATA_HOME FCITX_ADDON_DIRS
+mkdir -m700 "$XDG_RUNTIME_DIR"
+"$root/scripts/install" --with-integration
+data="$XDG_DATA_HOME/fcitx5/rime"
+rime_deployer --build "$data" /usr/share/rime-data "$data/build"
+xvfb-run -a dbus-run-session -- sh -eu -c '
+    fcitx5 -D >"$HOME/fcitx.log" 2>&1 &
+    daemon=$!
+    trap "kill $daemon 2>/dev/null || true; wait $daemon 2>/dev/null || true" EXIT
+    /usr/bin/python3 "$1/tests/input-session.py" || { tail -15 "$HOME/fcitx.log"; exit 1; }
+' test "$root"

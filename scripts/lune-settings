@@ -1,0 +1,287 @@
+#!/usr/bin/python3
+"""GTK settings for Lune Input."""
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+import dbus
+import gi
+import yaml
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gio, GLib, Gtk, Pango
+
+DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "fcitx5/rime"
+PREFERENCES = DATA / "lune_preferences.yaml"
+SCHEMA = DATA / "build/luna_pinyin_simp.schema.yaml"
+PREFIX = "fcitx://config/addon/"
+FUZZY = ["derive/([ei])n$/$1ng/", "derive/([ei])ng$/$1n/"]
+TABLES = {"english": "table_translator@melt_eng", "mixed": "table_translator@cn_en",
+          "terms": "table_translator@local_terms"}
+SCALAR = {"hints": "lune/spelling_hints", "count": "menu/page_size",
+          "quality": "melt_eng/initial_quality"}
+
+
+def read_yaml(path):
+    with path.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"无法读取配置 {path.name}")
+    return data
+
+
+def preferences():
+    document = read_yaml(PREFERENCES) if PREFERENCES.exists() else {}
+    if not isinstance(document.setdefault("patch", {}), dict):
+        raise ValueError("lune_preferences.yaml 的 patch 需要是映射。")
+    return document
+
+
+def write_preferences(data):
+    previous_time = int(PREFERENCES.stat().st_mtime) if PREFERENCES.exists() else 0
+    with tempfile.NamedTemporaryFile("w", dir=DATA, encoding="utf-8", delete=False) as f:
+        tmp = Path(f.name)
+        try:
+            yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+            f.flush()
+            # Rime 1.10 compares whole-second timestamps when deciding to rebuild.
+            if int(tmp.stat().st_mtime) <= previous_time:
+                os.utime(tmp, (previous_time + 1, previous_time + 1))
+            os.fsync(f.fileno())
+            tmp.replace(PREFERENCES)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+
+def active(path, patch, schema, default):
+    if path in patch:
+        return patch[path]
+    node = schema
+    for key in path.split("/"):
+        if not isinstance(node, dict) or key not in node:
+            return default
+        node = node[key]
+    return node
+
+
+def enabled(value):
+    return str(value).lower() in ("true", "1")
+
+
+class Settings:
+    def __init__(self):
+        bus = dbus.SessionBus()
+        self.controller = dbus.Interface(bus.get_object("org.fcitx.Fcitx5", "/controller"),
+                                         "org.fcitx.Fcitx.Controller1")
+        rime = self.controller.GetConfig(PREFIX + "rime")[0]
+        classic = self.controller.GetConfig(PREFIX + "classicui")[0]
+        self.integration = "LuneRawOnShift" in rime
+        self.animation = "CandidateResizeDuration" in classic
+        self.schema = schema = read_yaml(SCHEMA)
+        patch = preferences()["patch"]
+        tables = active("engine/translators", patch, schema, [])
+        rules = active("speller/algebra", patch, schema, [])
+        self.values = {
+            "raw": enabled(rime.get("LuneRawOnShift", False)),
+            "hints": enabled(active(SCALAR["hints"], patch, schema, False)),
+            "count": int(active(SCALAR["count"], patch, schema, 9)),
+            "quality": float(active(SCALAR["quality"], patch, schema, -1.2)),
+            "apostrophe": active("speller/delimiter", patch, schema, "' ").startswith("'"),
+            "fuzzy": all(rule in rules for rule in FUZZY),
+            "font": str(classic["Font"]),
+            "duration": int(classic.get("CandidateResizeDuration", 0)),
+            **{name: table in tables for name, table in TABLES.items()},
+        }
+
+    def set_config(self, addon, values):
+        config = dbus.Dictionary({key: dbus.String(str(value)) for key, value in values.items()},
+                                 signature="sv", variant_level=1)
+        self.controller.SetConfig(PREFIX + addon, config)
+
+    def save(self, updates):
+        changes = updates.keys() - {"raw", "font", "duration"}
+        if changes:
+            doc = preferences()
+            patch = doc["patch"]
+            schema = self.schema
+            for name in changes & SCALAR.keys():
+                patch[SCALAR[name]] = updates[name]
+            if "apostrophe" in changes:
+                patch["speller/delimiter"] = "' " if updates["apostrophe"] else " '"
+            if "fuzzy" in changes:
+                rules = active("speller/algebra", patch, schema, [])
+                rest = [rule for rule in rules if rule not in FUZZY]
+                patch["speller/algebra"] = FUZZY + rest if updates["fuzzy"] else rest
+            if changes & TABLES.keys():
+                tables = list(active("engine/translators", patch, schema, []))
+                for name, table in TABLES.items():
+                    if name in changes:
+                        if updates[name] and table not in tables:
+                            tables.append(table)
+                        elif not updates[name] and table in tables:
+                            tables.remove(table)
+                patch["engine/translators"] = tables
+            write_preferences(doc)
+        if "raw" in updates:
+            self.set_config("rime", {"LuneRawOnShift": updates["raw"]})
+        classic = {key: updates[name] for name, key in (("font", "Font"), ("duration", "CandidateResizeDuration"))
+                   if name in updates}
+        if classic:
+            self.set_config("classicui", classic)
+        if changes:
+            self.set_config("rime/deploy", {})
+        self.values.update(updates)
+        return bool(changes)
+
+
+class Window(Gtk.ApplicationWindow):
+    def __init__(self, app, settings):
+        super().__init__(application=app, title="Lune 输入法设置")
+        self.set_default_size(540, 430)
+        self.set_icon_name("fcitx-rime-rounded-white")
+        self.settings = settings
+        self.getters = {}
+        self.controls = {}
+        self.updating = False
+
+        header = Gtk.HeaderBar(title="Lune 输入法设置", show_close_button=True)
+        self.apply_button = Gtk.Button(label="应用")
+        self.apply_button.get_style_context().add_class("suggested-action")
+        self.apply_button.connect("clicked", self.apply)
+        header.pack_end(self.apply_button)
+        self.set_titlebar(header)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
+        self.add(body)
+        self.tabs = Gtk.Notebook()
+        body.pack_start(self.tabs, True, True, 0)
+        self.status = Gtk.Label(xalign=0, wrap=True)
+        body.pack_end(self.status, False, False, 0)
+
+        self.page("输入")
+        native_tip = "" if settings.integration else "（需启用 Lune 输入集成）"
+        self.toggle("raw", "Shift 切换时保留原文", "输入 hello 后轻按左或右 Shift，直接上屏 hello。" + native_tip,
+                    settings.integration)
+        self.toggle("hints", "第二候选提示拼音纠错", "如 hsang → shang，按 2 改回拼音，再选字。每页至少两项。" + native_tip,
+                    settings.integration)
+        self.toggle("fuzzy", "前后鼻音模糊匹配", "匹配 en / eng、in / ing，保留 an / ang 的区别。")
+        self.toggle("apostrophe", "用单引号分隔音节", "开启时显示 shu'ru'fa，关闭时使用空格。")
+
+        self.page("候选框")
+        self.spin("count", "每页候选数", "用数字键选择对应位置。", 1, 9, 1)
+        font = Gtk.FontButton(font=settings.values["font"], use_font=True, show_size=True)
+        self.control("font", "候选字体", "选择字体、字重和字号。", font, font.get_font, "font-set")
+        self.spin("duration", "右边框过渡（毫秒）",
+                  "设为 0 可关闭动画。" if settings.animation else "需要启用 Lune 的 X11 候选框动画组件。",
+                  0, 250, 1, settings.animation)
+
+        self.page("词库")
+        self.toggle("english", "英文候选", "输入拼音时同时匹配英文单词。")
+        self.spin("quality", "英文候选权重", "数值越低，越优先显示中文。", -5, 5, 0.1)
+        self.toggle("mixed", "中英混输", "例如输入 wifimima 可候选「Wi-Fi密码」。")
+        self.toggle("terms", "专业词和长词补全", "使用本地 IT 词表与长词前缀，例如 caozuox → 操作系统。")
+        self.update_button = Gtk.Button(label="检查更新")
+        self.update_button.connect("clicked", self.update_terms)
+        self.row("IT 专业词库", "从清华开放中文词库获取最新版。", self.update_button)
+        self.refresh()
+        self.show_all()
+
+    def page(self, name):
+        self.grid = Gtk.Grid(column_spacing=16, row_spacing=14, margin=16)
+        self.row_number = 0
+        self.tabs.append_page(self.grid, Gtk.Label(label=name))
+
+    def row(self, title, help_text, widget):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        label = Gtk.Label(label=title, xalign=0, hexpand=True)
+        label.set_mnemonic_widget(widget)
+        box.add(label)
+        note = Gtk.Label(label=help_text, xalign=0, wrap=True, max_width_chars=42)
+        note.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        note.get_style_context().add_class("dim-label")
+        box.add(note)
+        widget.set_valign(Gtk.Align.CENTER)
+        widget.set_halign(Gtk.Align.END)
+        widget.get_accessible().set_name(title)
+        self.grid.attach(box, 0, self.row_number, 1, 1)
+        self.grid.attach(widget, 1, self.row_number, 1, 1)
+        self.row_number += 1
+
+    def control(self, name, title, hint, widget, getter, signal, available=True):
+        self.controls[name] = widget
+        self.getters[name] = getter
+        self.row(title, hint, widget)
+        widget.set_sensitive(available)
+        widget.connect(signal, self.refresh)
+
+    def toggle(self, name, title, hint, available=True):
+        switch = Gtk.Switch(active=self.settings.values[name])
+        self.control(name, title, hint, switch, switch.get_active, "notify::active", available)
+
+    def spin(self, name, title, hint, low, high, step, available=True):
+        spin = Gtk.SpinButton.new_with_range(low, high, step)
+        spin.set_digits(1 if step < 1 else 0)
+        spin.set_value(self.settings.values[name])
+        getter = spin.get_value if step < 1 else spin.get_value_as_int
+        self.control(name, title, hint, spin, getter, "value-changed", available)
+
+    def changes(self):
+        return {name: get() for name, get in self.getters.items()
+                if get() != self.settings.values[name]}
+
+    def refresh(self, *args):
+        self.apply_button.set_sensitive(bool(self.changes()) and not self.updating)
+
+    def apply(self, *_):
+        try:
+            deploy = self.settings.save(self.changes())
+            self.status.set_text("设置已保存，已请求 Rime 重新部署。" if deploy else "设置已应用。")
+        except (OSError, ValueError, KeyError, yaml.YAMLError, dbus.DBusException) as err:
+            self.status.set_text(f"应用失败，可重试。{err}")
+        self.refresh()
+
+    def update_terms(self, *_):
+        script = str(Path.home() / ".local/bin/update-rime-it-dict")
+        try:
+            job = Gio.Subprocess.new([script], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+        except GLib.Error as err:
+            self.status.set_text(str(err))
+            return
+        self.updating = True
+        self.update_button.set_sensitive(False)
+        self.refresh()
+        self.status.set_text("正在检查 IT 词库更新…")
+        job.communicate_utf8_async(None, None, self.update_finished)
+
+    def update_finished(self, job, result):
+        try:
+            _, out, err = job.communicate_utf8_finish(result)
+            self.status.set_text(out.strip() if job.get_successful() else "更新失败。" + err.strip().split("\n")[-1])
+        except GLib.Error as err:
+            self.status.set_text(str(err))
+        self.updating = False
+        self.update_button.set_sensitive(True)
+        self.refresh()
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="io.github.lp86ndlb.LuneInput.Settings")
+
+    def do_activate(self):
+        window = self.get_active_window()
+        if window is None:
+            try:
+                window = Window(self, Settings())
+            except (OSError, ValueError, KeyError, yaml.YAMLError, dbus.DBusException) as err:
+                dialog = Gtk.MessageDialog(message_type=Gtk.MessageType.ERROR, buttons=Gtk.ButtonsType.CLOSE,
+                                           text="无法打开 Lune 输入法设置")
+                dialog.format_secondary_text(f"请确认 Fcitx5 已启动、朙月拼音已部署。\n{err}")
+                dialog.run()
+                dialog.destroy()
+                return
+        window.present()
+
+
+if __name__ == "__main__":
+    sys.exit(App().run(sys.argv))

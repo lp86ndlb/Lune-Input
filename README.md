@@ -32,7 +32,8 @@ Lune 将朙月拼音、实用词库与桌面外观整合为一套输入方案，
 ```bash
 sudo apt install fcitx5 fcitx5-rime fcitx5-chinese-addons fcitx5-config-qt \
   fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 fcitx5-frontend-qt5 \
-  rime-data-luna-pinyin rime-data-stroke librime-bin fonts-noto-cjk fonts-hanazono im-config
+  rime-data-luna-pinyin rime-data-stroke librime-bin fonts-noto-cjk fonts-hanazono im-config \
+  python3-gi gir1.2-gtk-3.0 python3-dbus python3-yaml
 ./scripts/install
 im-config -n fcitx5
 ```
@@ -46,6 +47,8 @@ im-config -n fcitx5
 | 想做什么 | 操作或示例 |
 | --- | --- |
 | 切换中英文 | 轻按左 Shift 或右 Shift。两侧行为一致，切换时关闭光标旁的状态提示。 |
+| 原样输入英文 | 启用下文的输入集成后，在中文模式输入 `hello`，轻按任一 Shift，`hello` 上屏并切到英文。 |
+| 纠正颠倒的字母 | 输入 `hsang` 或 `shnag`，第二格提示 `shang〔纠错〕`。按 2 或点击提示，候选变为「上、商、伤……」，再选字。 |
 | 选择候选词 | 每页最多九个，数字 1–9 直接选词。拼音光标在末尾时按 → 选下一个，空格确认。 |
 | 查看拼音切分 | 输入 `shurufa` 显示为 `shu'ru'fa`。单引号标记拼音引擎识别的音节边界。 |
 | 改一个拼错的字母 | 按 ← 回到拼音中间，用竖线定位。此时 → 先向右移动光标。 |
@@ -87,7 +90,31 @@ sudo apt install build-essential pkg-config patch xz-utils binutils \
 
 ## 调整配置
 
-打开 `fcitx5-configtool`，进入「附加组件 → 经典用户界面」调整字体、主题和候选方向。默认候选字体为 Noto Sans CJK SC Medium 11。扩展汉字由花园明朝字体补充显示。模糊音和每页候选数由 Rime 方案控制。
+在应用列表搜索 **Lune 输入法设置**。打开窗口后修改选项，点击「应用」。窗口包含三个分页。
+
+| 分页 | 可调整的选项 |
+| --- | --- |
+| 输入 | Shift 切换时保留原文、第二候选纠错提示、en/eng 与 in/ing 模糊音、音节分隔符 |
+| 候选框 | 每页 1–9 项、候选字体及字重、右边框动画时长 |
+| 词库 | 英文候选及权重、中英混输、专业词与长词补全、检查 IT 词库更新 |
+
+**输入集成**为托盘添加 **右键 → Lune Input → 配置…**，在中英文模式下都能打开，也提供 Shift 原文上屏和第二候选纠错。适配 Ubuntu 24.04 amd64 的 `fcitx5-rime 5.1.4-2build2`。在仓库根目录执行以下命令，然后重启 Fcitx5。
+
+```bash
+sudo apt install build-essential pkg-config patch xz-utils fcitx5-modules-dev \
+  libfcitx5core-dev libfcitx5config-dev libfcitx5utils-dev libglib2.0-dev \
+  librime-dev libgoogle-glog-dev libboost-dev libfmt-dev
+./scripts/build-integration
+./scripts/install --with-integration
+```
+
+已有 Lune 配置的用户，把最后一条安装命令换成 `./scripts/install --upgrade-integration`，即可保留现有分组、快捷键、外观和词库。
+
+纠错针对单个拼音音节中相邻两个字母颠倒、且可以唯一还原的情况。有效拼音、可完整切分的拼音和英文词表里的拼写会保留原候选。第一格仍可正常选用。将每页候选数设为 1 时只显示原本的首选词。
+
+Rime 选项保存在当前用户的 `fcitx5/rime/lune_preferences.yaml`，点击「应用」会自动请求重新部署。Shift 和外观设置通过正在运行的 Fcitx5 保存。边框时长需要上文的 X11 动画组件。两个构建完成后也可以运行 `./scripts/install --with-renderer --with-integration` 一并安装。系统 Rime 前端升级后，加载器会先使用发行版插件。
+
+更多主题和候选方向设置位于 `fcitx5-configtool` 的「附加组件 → 经典用户界面」。默认候选字体为 Noto Sans CJK SC Medium 11，扩展汉字由花园明朝字体补充显示。
 
 | 设置 | 仓库文件 | 默认值 |
 | --- | --- | --- |
@@ -96,6 +123,7 @@ sudo apt install build-essential pkg-config patch xz-utils binutils \
 | 中英文切换和提示 | [Fcitx5 全局配置](fcitx5/config) | 左右 Shift 均可切换 |
 | 圆角、颜色和选中态 | [主题目录](themes/catppuccin-mocha-mauve/) | Mocha Mauve |
 | X11 候选框渲染 | [补丁和加载器源码](renderer/) | 只对匹配版本启用 |
+| Shift 原文与第二格纠错 | [输入集成源码](integration/) | 安装输入集成后默认开启 |
 
 仓库里的文件是安装源。修改仓库后，按原来的安装方式再运行一次脚本。直接调整本机设置时，Fcitx5 配置默认在 `~/.config/fcitx5/`，Rime 方案在 `~/.local/share/fcitx5/rime/`。修改 Rime 的 YAML 后需重新部署。
 
