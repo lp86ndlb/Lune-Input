@@ -15,12 +15,14 @@
 #include <rime/context.h>
 #include <rime/engine.h>
 #include <rime/filter.h>
+#include <rime/menu.h>
 #include <rime/registry.h>
 #include <rime/schema.h>
+#include <rime/service.h>
 #include <rime/translation.h>
 
 namespace {
-thread_local fcitx::InputContext *currentInput = nullptr;
+thread_local const LuneInputScope *currentScope = nullptr;
 constexpr unsigned windowChars = 4;
 constexpr size_t candidateLimit = 32;
 
@@ -34,20 +36,15 @@ struct Neighbors {
     std::vector<std::string_view> right;
 };
 
-Neighbors neighbors(fcitx::InputContext *ic) {
+Neighbors neighbors(const fcitx::SurroundingText *surrounding) {
     Neighbors result;
-    if (!ic || !ic->hasFocus() || !ic->capabilityFlags().test(fcitx::CapabilityFlag::SurroundingText) ||
-        ic->capabilityFlags().testAny(fcitx::CapabilityFlag::PasswordOrSensitive)) {
+    if (!surrounding || !surrounding->isValid() || surrounding->text().empty()) {
         return result;
     }
-    const auto &surrounding = ic->surroundingText();
-    if (!surrounding.isValid() || surrounding.text().empty()) {
-        return result;
-    }
-    const std::string &text = surrounding.text();
+    const std::string &text = surrounding->text();
     const char *end = text.data() + text.size();
-    const auto begin = std::min(surrounding.cursor(), surrounding.anchor());
-    const auto finish = std::max(surrounding.cursor(), surrounding.anchor());
+    const auto begin = std::min(surrounding->cursor(), surrounding->anchor());
+    const auto finish = std::max(surrounding->cursor(), surrounding->anchor());
     const char *left = fcitx_utf8_get_nth_char(text.data(), begin);
     const char *right = fcitx_utf8_get_nth_char(left, finish - begin);
     const char *p = left;
@@ -188,7 +185,7 @@ public:
                 symbols = engine_->schema()->config()->GetList("lune/symbols/" + code);
             }
         }
-        auto context = context_ && segment.start == 0 ? neighbors(currentInput) : Neighbors{};
+        auto context = context_ && segment.start == 0 ? neighbors(LuneInputScope::surrounding()) : Neighbors{};
         auto *model = context.left.empty() && context.right.empty() ? nullptr : chineseModel();
         if (!symbols && !model) {
             return source;
@@ -233,9 +230,53 @@ private:
 };
 } // namespace
 
-LuneInputScope::LuneInputScope(fcitx::InputContext *input) : previous_(currentInput) { currentInput = input; }
-LuneInputScope::~LuneInputScope() { currentInput = previous_; }
+LuneInputScope::LuneInputScope(fcitx::InputContext *input, Fallback fallback)
+    : previous_(currentScope), input_(input), fallback_(std::move(fallback)) { currentScope = this; }
+LuneInputScope::~LuneInputScope() { currentScope = previous_; }
+
+const fcitx::SurroundingText *LuneInputScope::surrounding() {
+    auto *ic = currentScope ? currentScope->input_ : nullptr;
+    if (!ic || !ic->hasFocus() || ic->capabilityFlags().testAny(fcitx::CapabilityFlag::PasswordOrSensitive)) {
+        return nullptr;
+    }
+    if (ic->capabilityFlags().test(fcitx::CapabilityFlag::SurroundingText)) {
+        return &ic->surroundingText();
+    }
+    return currentScope->fallback_();
+}
 
 void registerLuneSuggestions() {
     rime::Registry::instance().Register("lune_suggestions", new rime::Component<LuneSuggestions>);
+}
+
+bool refreshLuneMenu(uintptr_t session) {
+    auto active = rime::Service::instance().GetSession(session);
+    auto *ctx = active ? active->context() : nullptr;
+    // Refresh one untouched candidate menu. A delayed reply must never move a
+    // highlight the user has already positioned or reopen a finished segment.
+    if (!ctx || !ctx->IsComposing() || ctx->caret_pos() != ctx->input().size() ||
+        ctx->composition().size() != 1 || ctx->composition().back().selected_index != 0 ||
+        ctx->composition().back().status >= rime::Segment::kSelected) {
+        return false;
+    }
+    auto nearby = neighbors(LuneInputScope::surrounding());
+    if (nearby.left.empty() && nearby.right.empty()) {
+        return false;
+    }
+    auto visible = [&]() {
+        std::vector<std::string> words;
+        if (!ctx->composition().empty()) {
+            if (auto menu = ctx->composition().back().menu) {
+                std::unique_ptr<rime::Page> page(menu->CreatePage(active->schema()->page_size(), 0));
+                if (page) {
+                    for (const auto &word : page->candidates) {
+                        words.push_back(word->text());
+                    }
+                }
+            }
+        }
+        return words;
+    };
+    auto before = visible();
+    return ctx->RefreshNonConfirmedComposition() && visible() != before;
 }

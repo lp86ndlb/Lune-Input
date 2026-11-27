@@ -89,10 +89,18 @@ index e9e9d8d..03150fe 100644
      reset(entry, event);
  }
 diff --git a/src/rimeengine.h b/src/rimeengine.h
-index 818471d..f186a04 100644
+index 818471d..581aab4 100644
 --- a/src/rimeengine.h
 +++ b/src/rimeengine.h
-@@ -59,6 +59,7 @@ FCITX_CONFIGURATION(
+@@ -7,6 +7,7 @@
+ #define _FCITX_RIMEENGINE_H_
+
+ #include "rimesession.h"
++#include "desktopcontext.h"
+ #include "rimestate.h"
+ #include <cstdint>
+ #include <fcitx-config/configuration.h>
+@@ -59,6 +60,7 @@ FCITX_CONFIGURATION(
      Option<bool> preeditCursorPositionAtBeginning{
          this, "PreeditCursorPositionAtBeginning",
          _("Fix embedded preedit cursor at the beginning of the preedit"), !isAndroid()};
@@ -100,7 +108,13 @@ index 818471d..f186a04 100644
      Option<bool> commitWhenDeactivate{
          this, "Commit when deactivate",
          _("Commit current text when deactivating"), true};
-@@ -109,7 +110,10 @@ public:
+@@ -104,12 +106,16 @@ public:
+                InputContextEvent &event) override;
+     void save() override;
+     auto &factory() { return factory_; }
++    auto &desktopReader() { return desktopReader_; }
+
+     const Configuration *getConfig() const override { return &config_; }
      void setConfig(const RawConfig &config) override {
          config_.load(config, true);
          safeSaveAsIni(config_, "conf/rime.conf");
@@ -112,7 +126,15 @@ index 818471d..f186a04 100644
      }
      void setSubConfig(const std::string &path, const RawConfig &) override;
      void updateConfig();
-@@ -172,6 +176,12 @@ private:
+@@ -162,6 +168,7 @@ private:
+     IconTheme theme_;
+     Instance *instance_;
+     EventDispatcher eventDispatcher_;
++    LuneDesktopReader desktopReader_{eventDispatcher_};
+     rime_api_t *api_;
+     static bool firstRun_;
+     uint64_t blockNotificationBefore_ = 0;
+@@ -172,6 +179,12 @@ private:
      SimpleAction separatorAction_;
      SimpleAction deployAction_;
      SimpleAction syncAction_;
@@ -126,7 +148,7 @@ index 818471d..f186a04 100644
      RimeEngineConfig config_;
      std::unordered_map<std::string, std::unordered_map<std::string, bool>>
 diff --git a/src/rimestate.cpp b/src/rimestate.cpp
-index 0ad2730..f8c9ff7 100644
+index 0ad2730..c8680e3 100644
 --- a/src/rimestate.cpp
 +++ b/src/rimestate.cpp
 @@ -5,6 +5,8 @@
@@ -134,49 +156,112 @@ index 0ad2730..f8c9ff7 100644
 
  #include "rimestate.h"
 +#include "spelling.h"
-+#include "suggestions.h"
++#include <fcitx/surroundingtext.h>
  #include "rimecandidate.h"
  #include "rimeengine.h"
  #include <fcitx-utils/stringutils.h>
-@@ -133,12 +135,15 @@ void RimeState::keyEvent(KeyEvent &event) {
+@@ -53,6 +55,7 @@ RimeSessionId RimeState::session(bool requestNewSession) {
+ }
+
+ void RimeState::clear() {
++    desktopContext_.reset();
+     if (auto session = this->session()) {
+         engine_->api()->clear_composition(session);
+     }
+@@ -110,6 +113,27 @@ void RimeState::selectSchema(const std::string &schema) {
+     api->select_schema(session(), schema.data());
+ }
+
++LuneInputScope RimeState::inputScope() {
++    return LuneInputScope(&ic_, [this]() -> const SurroundingText * {
++        if (!desktopContext_) {
++            desktopContext_ = std::make_shared<SurroundingText>();
++            engine_->desktopReader().request(ic_, desktopContext_, [this] { refreshDesktopContext(); });
++        }
++        return desktopContext_.get();
++    });
++}
++
++void RimeState::refreshDesktopContext() {
++    if (!ic_.hasFocus() || ic_.capabilityFlags().testAny(CapabilityFlag::PasswordOrSensitive) ||
++        engine_->api()->is_maintenance_mode()) {
++        return;
++    }
++    auto scope = inputScope();
++    if (refreshLuneMenu(session(false))) {
++        updateUI(&ic_, false);
++    }
++}
++
+ void RimeState::keyEvent(KeyEvent &event) {
+     auto api = engine_->api();
+     if (api->is_maintenance_mode()) {
+@@ -133,12 +157,22 @@ void RimeState::keyEvent(KeyEvent &event) {
          // IBUS_RELEASE_MASK
          intStates |= (1 << 30);
      }
-+    LuneInputScope luneScope(event.inputContext());
++    if (!event.isRelease()) {
++        const auto *input = api->get_input(session);
++        if (!input || !*input) {
++            desktopContext_.reset();
++        }
++    }
++    auto luneScope = inputScope();
      auto result = api->process_key(session, event.rawKey().sym(), intStates);
 
      auto ic = event.inputContext();
      RIME_STRUCT(RimeCommit, commit);
      if (api->get_commit(session, &commit)) {
 -        ic->commitString(commit.text);
++        desktopContext_.reset();
 +        if (!applyLuneSpelling(api, session, commit.text)) {
 +            ic->commitString(commit.text);
 +        }
          api->free_commit(&commit);
      }
 
-@@ -160,6 +165,7 @@ void RimeState::selectCandidate(InputContext *inputContext, int idx,
+@@ -160,6 +194,7 @@ void RimeState::selectCandidate(InputContext *inputContext, int idx,
      if (!session) {
          return;
      }
-+    LuneInputScope luneScope(inputContext);
++    auto luneScope = inputScope();
      if (global) {
          api->select_candidate(session, idx);
      } else {
-@@ -167,7 +173,9 @@ void RimeState::selectCandidate(InputContext *inputContext, int idx,
+@@ -167,7 +202,10 @@ void RimeState::selectCandidate(InputContext *inputContext, int idx,
      }
      RIME_STRUCT(RimeCommit, commit);
      if (api->get_commit(session, &commit)) {
 -        inputContext->commitString(commit.text);
++        desktopContext_.reset();
 +        if (!applyLuneSpelling(api, session, commit.text)) {
 +            inputContext->commitString(commit.text);
 +        }
          api->free_commit(&commit);
      }
      updateUI(inputContext, false);
-@@ -329,15 +337,19 @@ void RimeState::updateUI(InputContext *ic, bool keyRelease) {
+@@ -291,8 +329,12 @@ void RimeState::updateUI(InputContext *ic, bool keyRelease) {
 
- void RimeState::release() { session_.reset(); }
+         RIME_STRUCT(RimeContext, context);
+         if (!api->get_context(session, &context)) {
++            desktopContext_.reset();
+             break;
+         }
++        if (context.composition.length == 0) {
++            desktopContext_.reset();
++        }
+
+         updatePreedit(ic, context);
+
+@@ -327,17 +369,24 @@ void RimeState::updateUI(InputContext *ic, bool keyRelease) {
+     }
+ }
+
+-void RimeState::release() { session_.reset(); }
++void RimeState::release() {
++    desktopContext_.reset();
++    session_.reset();
++}
 
 -void RimeState::commitPreedit(InputContext *ic) {
 +void RimeState::commitPreedit(InputContext *ic, bool raw) {
@@ -198,10 +283,18 @@ index 0ad2730..f8c9ff7 100644
          api->free_context(&context);
      }
 diff --git a/src/rimestate.h b/src/rimestate.h
-index b711d59..a32a0b5 100644
+index b711d59..efa8bcf 100644
 --- a/src/rimestate.h
 +++ b/src/rimestate.h
-@@ -34,7 +34,7 @@ public:
+@@ -7,6 +7,7 @@
+ #define _FCITX_RIMESTATE_H_
+
+ #include "rimesession.h"
++#include "suggestions.h"
+ #include <fcitx/globalconfig.h>
+ #include <fcitx/inputcontextmanager.h>
+ #include <fcitx/inputcontextproperty.h>
+@@ -34,7 +35,7 @@ public:
      void updatePreedit(InputContext *ic, const RimeContext &context);
      void updateUI(InputContext *ic, bool keyRelease);
      void release();
@@ -210,3 +303,13 @@ index b711d59..a32a0b5 100644
      std::string subMode();
      std::string subModeLabel();
      void setLatinMode(bool latin);
+@@ -45,6 +46,9 @@ public:
+     void restore();
+
+ private:
++    LuneInputScope inputScope();
++    void refreshDesktopContext();
++    std::shared_ptr<SurroundingText> desktopContext_;
+     std::string lastMode_;
+     RimeEngine *engine_;
+     InputContext &ic_;

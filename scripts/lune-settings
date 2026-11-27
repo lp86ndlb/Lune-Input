@@ -220,7 +220,7 @@ class Window(Gtk.ApplicationWindow):
         suggestions_tip = "" if settings.suggestions else "（需启用新版 Lune 输入集成）"
         self.toggle("symbols", "符号候选", "例如 sheshidu → ℃、pi → π、oumu → Ω，按候选编号即可输入。" + suggestions_tip,
                     settings.suggestions)
-        self.toggle("context", "根据前后文联想", "应用提供周围文字时，在本机按光标两侧的汉字调整候选。" + suggestions_tip,
+        self.toggle("context", "根据前后文联想", "参考光标两侧各四个字。浏览器可通过本机辅助功能接口提供当前输入框的文字。" + suggestions_tip,
                     settings.suggestions)
         self.toggle("apostrophe", "用单引号分隔音节", "开启时显示 shu'ru'fa，关闭时使用空格。")
 

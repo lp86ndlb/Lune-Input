@@ -2,6 +2,11 @@
 # Run the real frontend on a separate display and bus, with an empty learning database.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+case "${1:-}" in
+    "") suite=input-session ;;
+    --browser) suite=browser-context ;;
+    *) echo 'Usage: tests/check-input [--browser]' >&2; exit 2 ;;
+esac
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 export HOME="$fixture" XDG_CONFIG_HOME="$fixture/config" XDG_DATA_HOME="$fixture/data"
@@ -12,10 +17,17 @@ unset DBUS_SESSION_BUS_ADDRESS WAYLAND_DISPLAY IBUS_ADDRESS FCITX_CONFIG_HOME FC
 mkdir -m700 "$XDG_RUNTIME_DIR"
 "$root/scripts/install" --with-integration
 data="$XDG_DATA_HOME/fcitx5/rime"
+if [ "$suite" = browser-context ]; then
+    touch "$fixture/lune-private-x11-test"
+    # Keep dictionary ranks identical across both contexts and both settings.
+    printf 'patch:\n  translator/enable_user_dict: false\n' > "$data/lune_preferences.yaml"
+    export GTK_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
+    unset NO_AT_BRIDGE
+fi
 rime_deployer --build "$data" /usr/share/rime-data "$data/build"
 xvfb-run -a dbus-run-session -- sh -eu -c '
     fcitx5 -D >"$HOME/fcitx.log" 2>&1 &
     daemon=$!
     trap "kill $daemon 2>/dev/null || true; wait $daemon 2>/dev/null || true" EXIT
-    /usr/bin/python3 "$1/tests/input-session.py" || { tail -15 "$HOME/fcitx.log"; exit 1; }
-' test "$root"
+    /usr/bin/python3 "$1/tests/$2.py" || { tail -15 "$HOME/fcitx.log"; exit 1; }
+' test "$root" "$suite"
