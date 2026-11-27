@@ -21,8 +21,8 @@
 
 Lune 将朙月拼音、实用词库与桌面外观整合为一套输入方案，适合在 Ubuntu 上日常中文输入与中英混输。
 
-- **输入体验**　横排九候选，左右 Shift 切换中英文，支持拼音纠错与前后鼻音配置。
-- **词库**　支持英文候选、中英混输和长词补全，内置可手动更新的 IT 专业词表。
+- **输入体验**　横排九候选，左右 Shift 切换中英文，支持拼音纠错与逐组配置模糊音。
+- **词库**　支持英文候选、中英混输、长词补全和常用符号。输入集成可结合前后文调整候选顺序。
 - **视觉设计**　Catppuccin Mocha 圆角主题、竖线编辑光标，以及适配 X11 的候选框右边缘过渡。
 
 ## 快速开始
@@ -53,7 +53,9 @@ im-config -n fcitx5
 | 选择候选词 | 每页最多九个，数字 1–9 直接选词，空格确认高亮候选。喜欢用方向键选词时，在「输入」中打开「左右方向键选词」，光标位于拼音末尾时即可用 → 和 ← 切换候选。 |
 | 查看拼音切分 | 输入 `shurufa` 显示为 `shu'ru'fa`。单引号标记拼音引擎识别的音节边界。 |
 | 改一个拼错的字母 | ← 按音节向左跳，→ 向右移动一个字母。例如 `shu'ru'fa` 从末尾按两次 ← 到 `ru` 的开头，再按一次 → 到 `r` 和 `u` 之间。 |
-| 区分前后鼻音 | 仅对 en/eng、in/ing 开启模糊音。an/ang 保持区分。 |
+| 输入单位和数学符号 | 在中文模式下输入 `sheshidu`、`du`、`pi`、`oumu`，按 2 分别输入 ℃、°、π、Ω。`omega` 的第二、第三项分别是 ω 和 Ω。 |
+| 按前后文选词 | 同样输入 `ban`，光标在「电路」后可优先选「板」，在「主任」前可优先选「班」。原首选保留在第一格。 |
+| 配置模糊音 | 「模糊音」页可分别勾选 z/zh、c/ch、s/sh 和各组前后鼻音。默认仅开启 en/eng 和 in/ing。an/ang、ian/iang 和 uan/uang 各有独立开关。 |
 | 中英混输 | 简拼 `key` 优先候选「可以」。输入 `wifimima` 可候选「Wi-Fi密码」，`macosbanben` 可候选「macOS版本」。 |
 | 补全长词 | 输入 `caozuox` 可候选「操作系统」，`rengongzh` 可候选「人工智能」。 |
 | 输入等号 | 没有正在编辑的拼音时，`=` 直接上屏。有候选时，`=` 和 `-` 可翻页。 |
@@ -91,11 +93,12 @@ sudo apt install build-essential pkg-config patch xz-utils binutils \
 
 ## 调整配置
 
-在应用列表搜索 **Lune**，点击淡紫色月牙图标打开设置。修改选项后点击「应用」。窗口包含三个分页。
+在应用列表搜索 **Lune**，点击淡紫色月牙图标打开设置。修改选项后点击「应用」。
 
 | 分页 | 可调整的选项 |
 | --- | --- |
-| 输入 | 左右方向键选词（默认关闭）、Shift 切换时保留原文、第二候选纠错提示、en/eng 与 in/ing 模糊音、音节分隔符 |
+| 输入 | 左右方向键选词、Shift 保留原文、第二候选纠错、符号候选、根据前后文联想、音节分隔符 |
+| 模糊音 | 分别勾选平翘舌音、前后鼻音及其他声母和韵母，共 14 组 |
 | 候选框 | 每页 1–9 项、候选字体及字重、右边框动画时长 |
 | 词库 | 英文候选及权重、中英混输、专业词与长词补全、检查 IT 词库更新 |
 
@@ -104,12 +107,16 @@ sudo apt install build-essential pkg-config patch xz-utils binutils \
 ```bash
 sudo apt install build-essential pkg-config patch xz-utils fcitx5-modules-dev \
   libfcitx5core-dev libfcitx5config-dev libfcitx5utils-dev libglib2.0-dev \
-  librime-dev libgoogle-glog-dev libboost-dev libfmt-dev
+  librime-dev libgoogle-glog-dev libboost-dev libfmt-dev libimecore-dev libime-data-language-model
 ./scripts/build-integration
 ./scripts/install --with-integration
 ```
 
 已有 Lune 配置的用户，把最后一条安装命令换成 `./scripts/install --upgrade-integration`，即可保留现有分组、快捷键、外观和词库。
+
+「符号候选」和「根据前后文联想」在输入集成中默认开启，可以分别关闭。符号按完整拼写触发，支持手动分音。拼写与符号的对应关系见[符号词库](rime/lune_symbol_words.yaml)。
+
+前后文联想使用系统自带的 libime 中文语言模型。每次最多参考光标左右各四个相邻汉字，选区按即将替换的位置计算。匹配到常见搭配时，从当前拼音的候选中提早显示一项。上下文只在本机临时使用。密码框、敏感字段以及未提供周围文字的应用均采用常规排序。
 
 「第二候选提示拼音纠错」同时控制字母颠倒和误连按。颠倒字母支持单个音节。误连按支持连续拼音，一次检查一处重复字母，优先删去最少的字母，得到唯一可完整切分的拼写时才提示。`jinnian`（今年）和 `zhongguo`（中国）中相邻的相同字母各属两个音节，会按原拼写出词。第一格照常选用，每页只有一项时会隐藏纠错提示。
 
@@ -124,7 +131,7 @@ Rime 选项保存在当前用户的 `fcitx5/rime/lune_preferences.yaml`，点击
 | 中英文切换和提示 | [Fcitx5 全局配置](fcitx5/config) | 左右 Shift 均可切换 |
 | 圆角、颜色和选中态 | [主题目录](themes/catppuccin-mocha-mauve/) | Mocha Mauve |
 | X11 候选框渲染 | [补丁和加载器源码](renderer/) | 只对匹配版本启用 |
-| Shift 原文与第二格纠错 | [输入集成源码](integration/) | 安装输入集成后默认开启 |
+| Shift 原文、第二格纠错、符号与上下文候选 | [输入集成源码](integration/) | 安装输入集成后默认开启 |
 
 仓库里的文件是安装源。修改仓库后，按原来的安装方式再运行一次脚本。直接调整本机设置时，Fcitx5 配置默认在 `~/.config/fcitx5/`，Rime 方案在 `~/.local/share/fcitx5/rime/`。修改 Rime 的 YAML 后需重新部署。
 
@@ -133,6 +140,7 @@ Rime 选项保存在当前用户的 `fcitx5/rime/lune_preferences.yaml`，点击
 | 上游项目 | Lune 使用的部分 |
 | --- | --- |
 | [Fcitx5](https://github.com/fcitx/fcitx5) 与 [fcitx5-rime](https://github.com/fcitx/fcitx5-rime) | 桌面输入框架、Rime 前端及 Classic UI。仓库中的 X11 补丁基于 5.1.7。 |
+| [libime](https://github.com/fcitx/libime) | 使用系统安装的中文语言模型为上下文搭配评分 |
 | [Rime](https://github.com/rime/librime)、[朙月拼音](https://github.com/rime/rime-luna-pinyin) 与 [八股文](https://github.com/rime/rime-essay) | 输入引擎、简体拼音方案及 `essay.txt` 词频数据 |
 | [雾凇拼音](https://github.com/iDvel/rime-ice) | 英文词库、融合拼音方案、中英词表和长词前缀的数据来源。英文词库文件头保留了原始来源。 |
 | [THUOCL](https://github.com/thunlp/THUOCL) | 清华大学开放中文词库中的 IT 词表 |

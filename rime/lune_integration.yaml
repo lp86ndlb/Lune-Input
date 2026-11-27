@@ -1,5 +1,11 @@
 patch:
   engine/processors/@before 0: lune_caret_boundary
+  # The standard simplified schema starts with simplifier, uniquifier.
+  engine/filters/@after 0: lune_suggestions
   engine/filters/+:
     - lune_spelling
   lune/spelling_hints: true
+  lune/symbol_candidates: true
+  lune/context_candidates: true
+  lune/symbols:
+    __include: lune_symbol_words:/symbols

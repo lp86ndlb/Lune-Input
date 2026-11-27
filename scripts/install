@@ -88,7 +88,7 @@ def install():
     if args.with_integration or args.upgrade_integration:
         library = HOME / ".local/lib/fcitx5/lune"
         include("build", "librime-lune.so librime-select.so", library)
-        include("rime", "lune_integration.yaml", fcitx / "rime")
+        include("rime", "lune_integration.yaml lune_symbol_words.yaml", fcitx / "rime")
         vendor = Path("/usr/share/fcitx5/addon/rime.conf").read_text()
         entry, count = re.subn(r"^Library=export:librime$", lambda _: f"Library=export:{library}/librime-select",
                                vendor, flags=re.MULTILINE)

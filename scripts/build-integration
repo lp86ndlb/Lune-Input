@@ -95,7 +95,7 @@ def main():
                         ROOT / "integration/fcitx5-rime-5.1.4.patch"], check=True)
         write_spellings(work / "spellings.inc")
         headers = Path(os.environ.get("LUNE_INCLUDE_ROOT", "/usr/include"))
-        includes = [ROOT / "integration", work, headers,
+        includes = [ROOT / "integration", work, headers, headers / "LibIME", Path("/usr/include/LibIME"),
                     *[p for p in (headers / "Fcitx5").glob("*") if p.is_dir()],
                     *[p for p in (headers / "Fcitx5/Module/fcitx-module").glob("*") if p.is_dir()]]
         flags = ["-std=c++17", "-O2", "-fPIC", "-fvisibility=hidden", "-pthread",
@@ -110,11 +110,12 @@ def main():
 
         with ThreadPoolExecutor(max_workers=min(3, os.cpu_count() or 1)) as pool:
             objects = list(pool.map(compile_file, [*sorted((source / "src").glob("*.cpp")),
-                                                   ROOT / "integration/spelling.cpp", ROOT / "integration/caret.cpp"]))
+                                                   ROOT / "integration/spelling.cpp", ROOT / "integration/caret.cpp",
+                                                   ROOT / "integration/suggestions.cpp"]))
         enhanced = work / "librime-lune.so"
         subprocess.run(["g++", "-shared", "-Wl,-z,defs", "-o", enhanced, *objects,
                         "-l:libFcitx5Core.so.7", "-l:libFcitx5Config.so.6", "-l:libFcitx5Utils.so.2",
-                        "-l:libglog.so.1", "-l:librime.so.1", "-lfmt"], check=True)
+                        "-l:libglog.so.1", "-l:librime.so.1", "-l:libIMECore.so.0", "-lfmt"], check=True)
         selector = work / "librime-select.so"
         glib = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "glib-2.0"], text=True))
         subprocess.run(["cc", "-shared", "-fPIC", f'-DVENDOR_PATH="{VENDOR}"',

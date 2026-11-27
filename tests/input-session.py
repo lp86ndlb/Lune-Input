@@ -35,7 +35,9 @@ def check():
         candidates[:] = [str(word) for _, word in words]
 
     ctx.connect_to_signal("UpdateClientSideUI", receive)
-    ctx.SetCapability(1 << 39)  # ClientSideInputPanel
+    panel_cap = 1 << 39
+    surrounding_cap = 1 << 6
+    ctx.SetCapability(panel_cap | surrounding_cap)
     ctx.FocusIn()
     controller.SetCurrentIM("rime")
 
@@ -59,6 +61,23 @@ def check():
         for char in word:
             key(ord(char))
         return panel()
+
+    def apply_controls(changes):
+        ctx.Reset()
+        window = ui["Window"](app, ui["Settings"]())
+        for name, value in changes.items():
+            widget = window.controls[name]
+            assert widget.get_sensitive() and widget.get_active() != value, name
+            widget.set_active(value)
+        window.apply_button.clicked()
+        assert not window.changes(), window.status.get_text()
+        window.destroy()
+
+    def wait_for(predicate):
+        deadline = time.monotonic() + 45
+        while not predicate():
+            assert time.monotonic() < deadline, "Rime did not apply the settings"
+            time.sleep(.1)
 
     def test_arrows():
         left, right = 0xff51, 0xff53
@@ -100,19 +119,8 @@ def check():
         ctx.Reset()
 
         # The installed GTK switch must survive reopening and change real key events.
-        settings_path = Path(os.environ["XDG_DATA_HOME"]) / "fcitx5/lune/settings.py"
-        ui = runpy.run_path(str(settings_path), run_name="lune_test_settings")
-        app = ui["Gtk"].Application(application_id="io.github.lp86ndlb.LuneInput.KeyTest")
-        assert app.register(None)
         for enabled in (True, False):
-            key(0xff1b)
-            window = ui["Window"](app, ui["Settings"]())
-            switch = window.controls["candidate_arrows"]
-            assert switch.get_active() != enabled
-            switch.set_active(enabled)
-            window.apply_button.clicked()
-            assert not window.changes(), window.status.get_text()
-            window.destroy()
+            apply_controls({"candidate_arrows": enabled})
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 type_word("shang")
@@ -137,6 +145,65 @@ def check():
             ctx.ProcessKeyEventBatch(arrow, 0, 0, True, 0)
             assert not handled
 
+    def test_suggestions():
+        for raw, symbols in (("sheshidu", ["℃"]), ("she'shi'du", ["℃"]), ("du", ["°"]),
+                             ("pi", ["π"]), ("omega", ["ω", "Ω"]), ("oumu", ["Ω"])):
+            words = type_word(raw)
+            assert words[1:1+len(symbols)] == symbols, (raw, words)
+            assert len(words) == len(set(words))
+        assert "π" not in type_word("pijiu")
+        type_word("sheshidu")
+        assert key(ord("2")) == ["℃"]
+        type_word("omega")
+        mouse_commits = []
+        match = ctx.connect_to_signal("CommitString", lambda value: mouse_commits.append(str(value)))
+        ctx.SelectCandidate(2)
+        panel()
+        match.remove()
+        assert mouse_commits == ["Ω"], mouse_commits
+
+        def ban(text, cursor, anchor=None):
+            ctx.SetSurroundingText(text, cursor, cursor if anchor is None else anchor)
+            return type_word("ban")
+
+        plain = ban("", 0)
+        for text, cursor, anchor, expected in (("电路", 2, 2, "板"), ("主任", 0, 0, "班"),
+                                               ("😀电路替换", 5, 3, "板"), ("替换主任", 0, 2, "班")):
+            words = ban(text, cursor, anchor)
+            assert words[:2] == [plain[0], expected] and len(set(words)) == 9, (text, words)
+        assert ban("电路。", 3) == plain
+        assert ban("电路", 99) == plain  # invalidates a previously reported cursor
+        for caps in (panel_cap, panel_cap | surrounding_cap | (1 << 36),
+                     panel_cap | surrounding_cap | (1 << 3)):
+            ctx.SetCapability(caps)
+            words = ban("电路", 2)
+            assert not words or words == plain, (caps, words)
+        ctx.SetCapability(panel_cap | surrounding_cap)
+        ctx.SetSurroundingText("", 0, 0)
+
+        initial = ui["Settings"]().values
+        assert initial["symbols"] and initial["context"]
+        assert {k for k in ui["FUZZY"] if initial[k]} == {"en / eng", "in / ing"}
+        apply_controls({"symbols": False, "c / ch": True, "en / eng": False})
+        wait_for(lambda: "火车" in type_word("huoce") and "℃" not in type_word("sheshidu"))
+        saved = ui["Settings"]().values
+        assert {k for k in ui["FUZZY"] if saved[k]} == {"c / ch", "in / ing"}
+        assert "丰收" not in type_word("fenshou") and "姓名" in type_word("xinming")
+        assert "上班" not in type_word("sangban") and "知识" not in type_word("zishi")
+        assert ban("电路", 2)[1] == "板"
+
+        apply_controls({"context": False, "symbols": True, "s / sh": True, "c / ch": False,
+                        "en / eng": True})
+        wait_for(lambda: "上班" in type_word("sangban") and "℃" in type_word("sheshidu"))
+        assert not ui["Settings"]().values["context"]
+        assert ban("电路", 2) == plain and "火车" not in type_word("huoce")
+        assert "丰收" in type_word("fenshou")
+        apply_controls({"context": True, "s / sh": False})
+        wait_for(lambda: len(ban("电路", 2)) > 1 and panel()[1] == "板")
+        assert ui["Settings"]().values == initial
+        assert key(ord("2")) == ["板"]
+        ctx.SetSurroundingText("", 0, 0)
+
     try:
         deadline = time.monotonic() + 30
         while not type_word("w"):
@@ -144,7 +211,12 @@ def check():
             time.sleep(.12)
         assert type_word("key")[0] == "可以"
         assert len(type_word("shi")) == 9
+        settings_path = Path(os.environ["XDG_DATA_HOME"]) / "fcitx5/lune/settings.py"
+        ui = runpy.run_path(str(settings_path), run_name="lune_test_settings")
+        app = ui["Gtk"].Application(application_id="io.github.lp86ndlb.LuneInput.KeyTest")
+        assert app.register(None)
         test_arrows()
+        test_suggestions()
         repairs = {
             "hsang": "shang", "shnag": "shang",
             "qiing": "qing", "qiiing": "qing", "qiingwen": "qingwen",
@@ -171,7 +243,7 @@ def check():
             assert key(shift, code) == ["hello"]
             assert controller.CurrentInputMethod() == "keyboard-cn"
             assert key(shift, code) == [] and controller.CurrentInputMethod() == "rime"
-        print("拼音光标、方向键选词开关、Shift 原文、纠错、点选及中文排序通过。")
+        print("符号候选、双侧上下文、模糊音开关、拼音光标、Shift、纠错及点选通过。")
     finally:
         ctx.FocusOut()
         ctx.DestroyIC()

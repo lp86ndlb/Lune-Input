@@ -1,17 +1,18 @@
 diff --git a/src/rimeengine.cpp b/src/rimeengine.cpp
-index e9e9d8d..c00111c 100644
+index e9e9d8d..03150fe 100644
 --- a/src/rimeengine.cpp
 +++ b/src/rimeengine.cpp
-@@ -5,6 +5,8 @@
+@@ -5,6 +5,9 @@
   */
 
  #include "rimeengine.h"
 +#include "caret.h"
 +#include "spelling.h"
++#include "suggestions.h"
  #include "notifications_public.h"
  #include "rimestate.h"
  #include <cstdint>
-@@ -335,8 +337,45 @@ RimeEngine::RimeEngine(Instance *instance)
+@@ -335,8 +338,45 @@ RimeEngine::RimeEngine(Instance *instance)
      instance_->userInterfaceManager().registerAction("fcitx-rime-sync",
                                                       &syncAction_);
      schemaMenu_.addAction(&separatorAction_);
@@ -57,16 +58,17 @@ index e9e9d8d..c00111c 100644
      globalConfigReloadHandle_ = instance_->watchEvent(
          EventType::GlobalConfigReloaded, EventWatcherPhase::Default,
          [this](Event &) { refreshSessionPoolPolicy(); });
-@@ -420,6 +459,8 @@ void RimeEngine::rimeStart(bool fullcheck) {
+@@ -420,6 +460,9 @@ void RimeEngine::rimeStart(bool fullcheck) {
          firstRun_ = false;
      }
      api_->initialize(&fcitx_rime_traits);
 +    registerLuneCaretBoundary();
 +    registerLuneSpelling();
++    registerLuneSuggestions();
      api_->set_notification_handler(&rimeNotificationHandler, this);
      api_->start_maintenance(fullcheck);
 
-@@ -588,11 +629,16 @@ void RimeEngine::activate(const InputMethodEntry &, InputContextEvent &event) {
+@@ -588,11 +631,16 @@ void RimeEngine::activate(const InputMethodEntry &, InputContextEvent &event) {
 
  void RimeEngine::deactivate(const InputMethodEntry &entry,
                              InputContextEvent &event) {
@@ -124,18 +126,25 @@ index 818471d..f186a04 100644
      RimeEngineConfig config_;
      std::unordered_map<std::string, std::unordered_map<std::string, bool>>
 diff --git a/src/rimestate.cpp b/src/rimestate.cpp
-index 0ad2730..31c768d 100644
+index 0ad2730..f8c9ff7 100644
 --- a/src/rimestate.cpp
 +++ b/src/rimestate.cpp
-@@ -5,6 +5,7 @@
+@@ -5,6 +5,8 @@
   */
 
  #include "rimestate.h"
 +#include "spelling.h"
++#include "suggestions.h"
  #include "rimecandidate.h"
  #include "rimeengine.h"
  #include <fcitx-utils/stringutils.h>
-@@ -138,7 +139,9 @@ void RimeState::keyEvent(KeyEvent &event) {
+@@ -133,12 +135,15 @@ void RimeState::keyEvent(KeyEvent &event) {
+         // IBUS_RELEASE_MASK
+         intStates |= (1 << 30);
+     }
++    LuneInputScope luneScope(event.inputContext());
+     auto result = api->process_key(session, event.rawKey().sym(), intStates);
+
      auto ic = event.inputContext();
      RIME_STRUCT(RimeCommit, commit);
      if (api->get_commit(session, &commit)) {
@@ -146,7 +155,15 @@ index 0ad2730..31c768d 100644
          api->free_commit(&commit);
      }
 
-@@ -167,7 +170,9 @@ void RimeState::selectCandidate(InputContext *inputContext, int idx,
+@@ -160,6 +165,7 @@ void RimeState::selectCandidate(InputContext *inputContext, int idx,
+     if (!session) {
+         return;
+     }
++    LuneInputScope luneScope(inputContext);
+     if (global) {
+         api->select_candidate(session, idx);
+     } else {
+@@ -167,7 +173,9 @@ void RimeState::selectCandidate(InputContext *inputContext, int idx,
      }
      RIME_STRUCT(RimeCommit, commit);
      if (api->get_commit(session, &commit)) {
@@ -157,7 +174,7 @@ index 0ad2730..31c768d 100644
          api->free_commit(&commit);
      }
      updateUI(inputContext, false);
-@@ -329,15 +334,19 @@ void RimeState::updateUI(InputContext *ic, bool keyRelease) {
+@@ -329,15 +337,19 @@ void RimeState::updateUI(InputContext *ic, bool keyRelease) {
 
  void RimeState::release() { session_.reset(); }
 
